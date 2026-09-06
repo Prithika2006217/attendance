@@ -1,0 +1,2490 @@
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework import status
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.parsers import MultiPartParser, FormParser
+from django.contrib.auth import login
+from django.views.decorators.csrf import csrf_exempt
+from django.http import HttpResponse, JsonResponse
+from django.db.models import Q
+from django.utils import timezone
+from openpyxl import load_workbook, Workbook
+import datetime
+import re
+import secrets
+import hashlib
+import qrcode
+import io
+import base64
+import random
+from decimal import Decimal
+from .models import User, Attendance, Department, Subject, Section, AttendancePortalControl, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment
+from .serializers import (
+    RegisterSerializer, LoginSerializer, AttendanceSerializer, UserSerializer,
+    DepartmentSerializer, SubjectSerializer, SectionSerializer, FacultyDepartmentSectionSerializer,
+    QRAttendanceSessionSerializer, QRAttendanceRecordSerializer, MentorStudentAssignmentSerializer,
+)
+
+
+def _sections_list_to_csv(secs) -> str:
+    """Turn a list/tuple (or single value) into comma-separated unique section names."""
+    if secs is None:
+        return ''
+    if isinstance(secs, (list, tuple)):
+        items = secs
+    else:
+        items = [secs]
+    seen = []
+    for x in items:
+        s = str(x).strip()
+        if s and s not in seen:
+            seen.append(s)
+    return ','.join(seen)
+
+
+def _q_user_section_token(section_name: str) -> Q:
+    """Match User.section when it stores comma-separated section names."""
+    n = (section_name or '').strip()
+    if not n:
+        return Q(pk__in=[])
+    return (
+        Q(section=n)
+        | Q(section__startswith=f'{n},')
+        | Q(section__endswith=f',{n}')
+        | Q(section__contains=f',{n},')
+    )
+
+
+def _get_faculty_department_sections(user):
+    """Get faculty department-section assignments as a list of dicts."""
+    if user.role != 'faculty':
+        return []
+    assignments = FacultyDepartmentSection.objects.filter(faculty=user).select_related('department', 'section')
+    return [
+        {
+            'department_code': assignment.department.code,
+            'section_name': assignment.section.name
+        }
+        for assignment in assignments
+    ]
+
+
+def _generate_qr_token():
+    """Generate a secure random token for QR attendance."""
+    return secrets.token_urlsafe(32)
+
+
+def _generate_custom_session_id():
+    """Generate a random 5-digit session ID for security."""
+    return str(random.randint(10000, 99999))
+
+
+def _hash_device_id(device_id: str) -> str:
+    """Hash device ID for consistent identification."""
+    return hashlib.sha256(device_id.encode()).hexdigest()
+
+
+def _generate_qr_code_base64(token: str, session_id: str) -> str:
+    """Generate QR code as base64 encoded image with session information."""
+    # Format session ID to 5 digits if it's a number, otherwise use as-is
+    if session_id.isdigit():
+        formatted_session_id = str(int(session_id)).zfill(5)
+    else:
+        formatted_session_id = session_id
+    
+    # Embed session information in the QR code
+    qr_data = f"{formatted_session_id}:{token}"
+    print(f"Generating QR code with data: {qr_data}")
+    
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(qr_data)
+    qr.make(fit=True)
+    
+    img = qr.make_image(fill_color="black", back_color="white")
+    
+    # Convert to base64
+    buffer = io.BytesIO()
+    img.save(buffer, format='PNG')
+    img_str = base64.b64encode(buffer.getvalue()).decode()
+    
+    print(f"QR code generated successfully for session {formatted_session_id}")
+    return f"data:image/png;base64,{img_str}"
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def faculty_department_sections_view(request, user_id=None):
+    """Get or set faculty department-section assignments.
+    
+    GET: Return department-section assignments for a faculty member.
+    POST: Update department-section assignments for a faculty member (admin only).
+    """
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    
+    # Determine target faculty
+    if user_id:
+        if not is_admin:
+            return Response({"detail": "Admin only."}, status=403)
+        try:
+            target = User.objects.get(pk=user_id, role='faculty')
+        except User.DoesNotExist:
+            return Response({"detail": "Faculty not found."}, status=404)
+    else:
+        # Non-admin users can only view their own assignments
+        target = request.user
+        if target.role != 'faculty':
+            return Response({"detail": "Only faculty have department-section assignments."}, status=400)
+    
+    if request.method == 'GET':
+        assignments = FacultyDepartmentSection.objects.filter(faculty=target).select_related('department', 'section')
+        serializer = FacultyDepartmentSectionSerializer(assignments, many=True)
+        return Response(serializer.data)
+    
+    elif request.method == 'POST':
+        if not is_admin:
+            return Response({"detail": "Admin only."}, status=403)
+        
+        data = request.data
+        if not isinstance(data, list):
+            return Response({"detail": "Expected a list of department-section assignments."}, status=400)
+        
+        # Delete existing assignments
+        FacultyDepartmentSection.objects.filter(faculty=target).delete()
+        
+        # Create new assignments
+        created_assignments = []
+        for assignment in data:
+            dept_code = assignment.get('department_code')
+            section_name = assignment.get('section_name')
+            if dept_code and section_name:
+                try:
+                    department = Department.objects.get(code=dept_code)
+                    section = Section.objects.get(name=section_name)
+                    fds = FacultyDepartmentSection.objects.create(
+                        faculty=target,
+                        department=department,
+                        section=section
+                    )
+                    created_assignments.append(fds)
+                except (Department.DoesNotExist, Section.DoesNotExist):
+                    return Response(
+                        {"detail": f"Invalid department '{dept_code}' or section '{section_name}'."},
+                        status=400
+                    )
+        
+        serializer = FacultyDepartmentSectionSerializer(created_assignments, many=True)
+        return Response(serializer.data, status=201)
+
+
+def _get_attendance_portal_control() -> AttendancePortalControl:
+    ctrl = AttendancePortalControl.objects.order_by('id').first()
+    if ctrl:
+        return ctrl
+    return AttendancePortalControl.objects.create()
+
+
+@api_view(['GET', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def attendance_portal_freeze_view(request):
+    """Get or update attendance portal freeze flags.
+
+    GET: available to authenticated users.
+    PATCH: admin only.
+    """
+    ctrl = _get_attendance_portal_control()
+
+    if request.method == 'GET':
+        return Response(
+            {
+                "freeze_faculty_portal": bool(ctrl.freeze_faculty_portal),
+                "freeze_student_portal": bool(ctrl.freeze_student_portal),
+                "updated_at": ctrl.updated_at,
+            }
+        )
+
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+
+    data = request.data if isinstance(request.data, dict) else {}
+    changed = False
+    if 'freeze_faculty_portal' in data:
+        ctrl.freeze_faculty_portal = bool(data.get('freeze_faculty_portal'))
+        changed = True
+    if 'freeze_student_portal' in data:
+        ctrl.freeze_student_portal = bool(data.get('freeze_student_portal'))
+        changed = True
+    if changed:
+        ctrl.save(update_fields=['freeze_faculty_portal', 'freeze_student_portal', 'updated_at'])
+
+    return Response(
+        {
+            "freeze_faculty_portal": bool(ctrl.freeze_faculty_portal),
+            "freeze_student_portal": bool(ctrl.freeze_student_portal),
+            "updated_at": ctrl.updated_at,
+        }
+    )
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def register(request):
+    data = request.data.copy()
+    
+    # Extract faculty department-section assignments before creating user
+    faculty_dept_sections = data.pop('faculty_department_sections', None)
+    
+    if 'departments' in data:
+        depts = data.get('departments')
+        data['department'] = ','.join(depts) if isinstance(depts, (list, tuple)) else (depts or '')
+        data.pop('departments', None)
+    if 'subjects' in data:
+        subjs = data.get('subjects')
+        data['assigned_subject_ids'] = ','.join(str(x) for x in (subjs if isinstance(subjs, (list, tuple)) else [])) if subjs else ''
+        data.pop('subjects', None)
+    if 'sections' in data:
+        data['section'] = _sections_list_to_csv(data.get('sections'))
+        data.pop('sections', None)
+    serializer = RegisterSerializer(data=data)
+    if serializer.is_valid():
+        user = serializer.save()
+        
+        # Create faculty department-section assignments if provided and user is faculty
+        if faculty_dept_sections and user.role == 'faculty':
+            for assignment in faculty_dept_sections:
+                dept_code = assignment.get('department_code')
+                section_name = assignment.get('section_name')
+                if dept_code and section_name:
+                    try:
+                        department = Department.objects.get(code=dept_code)
+                        section = Section.objects.get(name=section_name)
+                        FacultyDepartmentSection.objects.create(
+                            faculty=user,
+                            department=department,
+                            section=section
+                        )
+                    except (Department.DoesNotExist, Section.DoesNotExist):
+                        # Skip invalid assignments
+                        pass
+        
+        return Response(serializer.data, status=201)
+    return Response(serializer.errors, status=400)
+
+
+@csrf_exempt
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def login_view(request):
+    print(f"Login attempt - User: {request.data.get('username')}, Status: Request received")
+    
+    serializer = LoginSerializer(data=request.data)
+    if serializer.is_valid():
+        user = serializer.validated_data['user']
+        login(request, user)
+        
+        print(f"Login success - User: {user.username}, Auth class: JWT + Session, Authenticated: True")
+
+        # Auto-detect role from user
+        role = user.role
+        if user.is_superuser:
+            role = "admin"
+
+        # Generate JWT tokens
+        refresh = RefreshToken.for_user(user)
+        
+        response_data = {
+            "message": "Login successful",
+            "id": user.id,
+            "email": user.email,
+            "role": role,
+            "username": user.username,
+            "full_name": user.full_name or user.username,
+            "department": user.department or "",
+            "faculty_department_sections": _get_faculty_department_sections(user) if role == 'faculty' else [],
+            "access": str(refresh.access_token),
+            "refresh": str(refresh)
+        }
+        
+        print(f"Login response status: 200, Tokens generated, Role: {role}")
+        return Response(response_data, status=200)
+
+    print(f"Login failed - Validation errors: {serializer.errors}")
+    return Response(serializer.errors, status=400)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def attendance_view(request):
+    print(f"Attendance API - Method: {request.method}, User: {request.user.username if request.user.is_authenticated else 'Anonymous'}, Authenticated: {request.user.is_authenticated}")
+    
+    ctrl = _get_attendance_portal_control()
+    if request.user.role == 'student' and ctrl.freeze_student_portal:
+        return Response({"detail": "Attendance portal is currently frozen for students."}, status=423)
+    if request.user.role == 'faculty' and ctrl.freeze_faculty_portal:
+        return Response({"detail": "Attendance portal is currently frozen for faculty."}, status=423)
+
+    if request.method == 'GET':
+        if request.user.role == 'student':
+            records = Attendance.objects.filter(student=request.user)
+        else:
+            records = Attendance.objects.all()
+
+        # Optional date range filtering: from_date, to_date in YYYY-MM-DD format
+        from_date_str = request.query_params.get('from_date') or request.GET.get('from_date')
+        to_date_str = request.query_params.get('to_date') or request.GET.get('to_date')
+        from_date = to_date = None
+        try:
+            if from_date_str:
+                from_date = datetime.date.fromisoformat(from_date_str)
+            if to_date_str:
+                to_date = datetime.date.fromisoformat(to_date_str)
+        except (TypeError, ValueError):
+            # Ignore invalid filters and return full data instead of erroring out
+            from_date = to_date = None
+
+        if from_date:
+            records = records.filter(date__gte=from_date)
+        if to_date:
+            records = records.filter(date__lte=to_date)
+
+        records_list = list(records.values('status', 'hours', 'total_hours'))
+        total_attended = Decimal('0')
+        total_scheduled = Decimal('0')
+        for r in records_list:
+            th = r.get('total_hours')
+            h = r.get('hours')
+            if th is not None and th > 0:
+                total_scheduled += th
+                total_attended += (h if h is not None else (Decimal('1') if str(r.get('status') or '').lower() == 'present' else Decimal('0')))
+            else:
+                total_scheduled += Decimal('1')
+                total_attended += Decimal('1') if str(r.get('status') or '').lower() == 'present' else Decimal('0')
+
+        # 1 hour = 1 class: total_classes and present_count are in "class" units (hours)
+        total_classes = int(round(total_scheduled))
+        present_count = int(round(total_attended))
+
+        percentage = 0
+        if total_scheduled > 0:
+            percentage = float(total_attended / total_scheduled * 100)
+
+        serializer = AttendanceSerializer(records, many=True)
+
+        return Response({
+            "total_classes": total_classes,
+            "present_count": present_count,
+            "total_attended_hours": float(total_attended),
+            "total_hours": float(total_scheduled),
+            "attendance_percentage": round(percentage, 2),
+            "records": serializer.data
+        })
+
+    elif request.method == 'POST':
+        if request.user.role not in ['faculty', 'admin']:
+            return Response({"error": "Not authorized"}, status=403)
+
+        data = request.data
+        if isinstance(data, list):
+            def parse_date_for_post(value):
+                if value is None:
+                    return None
+                if isinstance(value, datetime.date):
+                    return value if not isinstance(value, datetime.datetime) else value.date()
+                if isinstance(value, datetime.datetime):
+                    return value.date()
+                try:
+                    return datetime.date.fromisoformat(str(value).strip())
+                except (TypeError, ValueError):
+                    return None
+
+            saved_count = 0
+            errors = []
+            for i, item in enumerate(data):
+                if not isinstance(item, dict):
+                    errors.append({"index": i, "errors": {"detail": "Invalid item, expected object."}})
+                    continue
+                try:
+                    student_id = int(item.get('student'))
+                except (TypeError, ValueError):
+                    student_id = None
+                subject = item.get('subject')
+                date_val = item.get('date')
+                status_val = item.get('status')
+                if student_id is None or not str(subject).strip():
+                    errors.append({"index": i, "errors": {"detail": "Missing student or subject."}})
+                    continue
+                if not str(status_val).strip().lower() in ('present', 'absent'):
+                    errors.append({"index": i, "errors": {"detail": "Status must be 'present' or 'absent'."}})
+                    continue
+                date_obj = parse_date_for_post(date_val)
+                if not date_obj:
+                    errors.append({"index": i, "errors": {"detail": f"Invalid date: {date_val}"}})
+                    continue
+                try:
+                    stu = User.objects.get(pk=student_id, role='student')
+                except User.DoesNotExist:
+                    errors.append({"index": i, "errors": {"detail": f"Student id {student_id} not found."}})
+                    continue
+                if stu.is_detained:
+                    errors.append({"index": i, "errors": {"detail": "This student is detained and cannot receive attendance marks."}})
+                    continue
+                status_normalized = str(status_val).strip().lower()
+                if status_normalized in ('present', 'p'):
+                    status_normalized = 'present'
+                elif status_normalized in ('absent', 'a'):
+                    status_normalized = 'absent'
+                defaults = {"status": status_normalized}
+                hours_val = item.get('hours')
+                total_hours_val = item.get('total_hours')
+                h_num, th_num = None, None
+                if hours_val is not None and str(hours_val).strip() != '':
+                    try:
+                        h_num = float(str(hours_val).strip().replace(',', '.'))
+                        if h_num >= 0:
+                            defaults["hours"] = round(h_num, 2)
+                    except (TypeError, ValueError):
+                        pass
+                if total_hours_val is not None and str(total_hours_val).strip() != '':
+                    try:
+                        th_num = float(str(total_hours_val).strip().replace(',', '.'))
+                        if th_num > 0:
+                            defaults["total_hours"] = round(th_num, 2)
+                    except (TypeError, ValueError):
+                        pass
+                if defaults.get("hours") is not None and defaults.get("total_hours") is None:
+                    defaults["total_hours"] = 1
+                if defaults.get("total_hours") is not None and defaults.get("hours") is None:
+                    defaults["hours"] = 1 if status_normalized == 'present' else 0
+                existing_qs = Attendance.objects.filter(
+                    student_id=student_id,
+                    subject=str(subject).strip(),
+                    date=date_obj,
+                )
+                if request.user.role == 'faculty' and existing_qs.exists():
+                    errors.append({
+                        "index": i,
+                        "errors": {
+                            "detail": "Attendance already saved for this student/subject/date. Only admin can modify it."
+                        },
+                    })
+                    continue
+                _, created = Attendance.objects.update_or_create(
+                    student_id=student_id,
+                    subject=str(subject).strip(),
+                    date=date_obj,
+                    defaults=defaults,
+                )
+                saved_count += 1
+            return Response({
+                "created": saved_count,
+                "records": [],  # frontend refetches via GET
+                "errors": errors if errors else None,
+            }, status=201 if saved_count > 0 else (400 if errors else 201))
+
+        try:
+            single_student_id = int(data.get('student'))
+        except (TypeError, ValueError, AttributeError):
+            single_student_id = None
+        single_subject = str((data or {}).get('subject') or '').strip() if isinstance(data, dict) else ''
+        single_date = None
+        if isinstance(data, dict):
+            _raw_date = data.get('date')
+            try:
+                if isinstance(_raw_date, datetime.datetime):
+                    single_date = _raw_date.date()
+                elif isinstance(_raw_date, datetime.date):
+                    single_date = _raw_date
+                elif _raw_date is not None:
+                    single_date = datetime.date.fromisoformat(str(_raw_date).strip())
+            except (TypeError, ValueError):
+                single_date = None
+        if (
+            request.user.role == 'faculty'
+            and single_student_id is not None
+            and single_subject
+            and single_date is not None
+            and Attendance.objects.filter(
+                student_id=single_student_id, subject=single_subject, date=single_date
+            ).exists()
+        ):
+            return Response(
+                {"detail": "Attendance already saved for this student/subject/date. Only admin can modify it."},
+                status=403,
+            )
+
+        serializer = AttendanceSerializer(data=data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def user_list_view(request):
+    role = request.query_params.get('role', 'student')
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    is_faculty = request.user.role == 'faculty'
+
+    if not is_admin and not is_faculty:
+        return Response({"detail": "Not allowed to list users."}, status=403)
+    if is_faculty and role != 'student':
+        return Response({"detail": "Faculty can only list students."}, status=403)
+
+    qs = User.objects.filter(role=role).order_by('id')
+    if is_faculty:
+        qs = qs.filter(is_detained=False)
+        dept_str = (request.user.department or '').strip()
+        dept_list = [x.strip() for x in dept_str.split(',') if x.strip()]
+        
+        # Get faculty's assigned sections
+        faculty_dept_sections = FacultyDepartmentSection.objects.filter(faculty=request.user).select_related('department', 'section')
+        faculty_sections_by_dept = {}
+        for fds in faculty_dept_sections:
+            dept_code = fds.department.code
+            if dept_code not in faculty_sections_by_dept:
+                faculty_sections_by_dept[dept_code] = []
+            faculty_sections_by_dept[dept_code].append(fds.section.name)
+        
+        if dept_list:
+            qs = qs.filter(department__in=dept_list)
+            
+            # If faculty has specific section assignments, filter by those
+            if faculty_sections_by_dept:
+                # Build Q objects for each department-section combination
+                section_filters = []
+                for dept_code, sections in faculty_sections_by_dept.items():
+                    for section_name in sections:
+                        section_filters.append(
+                            Q(department=dept_code) & _q_user_section_token(section_name)
+                        )
+                
+                if section_filters:
+                    # Combine all section filters with OR
+                    combined_filter = section_filters[0]
+                    for filter_q in section_filters[1:]:
+                        combined_filter |= filter_q
+                    qs = qs.filter(combined_filter)
+            
+            department = request.query_params.get('department', '').strip()
+            if department and department in dept_list:
+                qs = qs.filter(department=department)
+            section = request.query_params.get('section', '').strip()
+            if section:
+                qs = qs.filter(_q_user_section_token(section))
+            year = request.query_params.get('year', '').strip()
+            if year:
+                qs = qs.filter(year=year)
+        else:
+            qs = User.objects.none()
+    elif is_admin and role == 'student':
+        # Admin Mark Attendance: filter by department, section, year when provided
+        department = request.query_params.get('department', '').strip()
+        if department:
+            qs = qs.filter(department=department)
+        section = request.query_params.get('section', '').strip()
+        if section:
+            qs = qs.filter(_q_user_section_token(section))
+        year = request.query_params.get('year', '').strip()
+        if year:
+            qs = qs.filter(year=year)
+
+    serializer = UserSerializer(qs, many=True)
+    result = serializer.data
+    if is_admin and role in ('student', 'faculty'):
+        for i, u in enumerate(qs):
+            if u.visible_password:
+                result[i]['visible_password'] = u.visible_password
+    return Response(result)
+
+
+@api_view(['GET', 'PATCH', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def user_detail_view(request, pk):
+    """Add support for multipart/form-data for photo uploads"""
+    if request.method == 'PATCH':
+        # Check if content type is multipart/form-data for photo upload
+        if request.content_type and 'multipart/form-data' in request.content_type:
+            request.parser_classes = [MultiPartParser, FormParser]
+    try:
+        target = User.objects.get(pk=pk)
+    except User.DoesNotExist:
+        return Response({"detail": "User not found."}, status=404)
+
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    is_faculty = request.user.role == 'faculty'
+    is_self = request.user.id == target.id
+    _dept_str = (request.user.department or '').strip()
+    _dept_list = [x.strip() for x in _dept_str.split(',') if x.strip()]
+    faculty_can_edit_student = is_faculty and target.role == 'student' and (
+        (target.department in _dept_list) if _dept_list else (target.department == request.user.department)
+    )
+
+    if not (is_admin or is_self or faculty_can_edit_student):
+        return Response({"detail": "Not allowed to access this user."}, status=403)
+
+    if request.method == 'GET':
+        serializer = UserSerializer(target)
+        data = serializer.data
+        if is_admin and target.role in ('student', 'faculty') and target.visible_password:
+            data['visible_password'] = target.visible_password
+        return Response(data)
+
+    elif request.method == 'PATCH':
+        data = request.data.copy()
+        new_password = (data.pop('new_password', None) or data.pop('password', None) or '').strip()
+        current_password = (data.pop('current_password', None) or '').strip()
+
+        can_change_password = False
+        if new_password:
+            if is_self and target.role in ('student', 'faculty'):
+                can_change_password = True
+                if not current_password:
+                    return Response({"current_password": "Required when changing your own password."}, status=400)
+                if not target.check_password(current_password):
+                    return Response({"current_password": "Current password is incorrect."}, status=400)
+            elif is_self and (target.role == 'admin' or target.is_superuser):
+                can_change_password = True
+                if not current_password:
+                    return Response({"current_password": "Required when changing your own password."}, status=400)
+                if not target.check_password(current_password):
+                    return Response({"current_password": "Current password is incorrect."}, status=400)
+            elif is_admin and target.role in ('student', 'faculty') and not target.is_superuser:
+                can_change_password = True
+            else:
+                return Response({"detail": "You cannot change this user's password."}, status=403)
+
+        if can_change_password and new_password:
+            target.set_password(new_password)
+            target.visible_password = new_password
+            target.save(update_fields=['password', 'visible_password'])
+
+        # Allow self to update username (must be unique)
+        new_username = (data.pop('username', None) or '').strip()
+        if is_self and new_username and new_username != target.username:
+            if User.objects.filter(username=new_username).exclude(pk=target.pk).exists():
+                return Response({"username": ["This username is already taken."]}, status=400)
+            target.username = new_username
+            target.save(update_fields=['username'])
+
+        if 'departments' in data:
+            depts = data.get('departments')
+            data['department'] = ','.join(depts) if isinstance(depts, (list, tuple)) else (depts or '')
+            data.pop('departments', None)
+        if 'subjects' in data:
+            subjs = data.get('subjects')
+            data['assigned_subject_ids'] = ','.join(str(x) for x in (subjs if isinstance(subjs, (list, tuple)) else [])) if subjs else ''
+            data.pop('subjects', None)
+        if 'sections' in data:
+            data['section'] = _sections_list_to_csv(data.get('sections'))
+            data.pop('sections', None)
+        
+        # Handle faculty department-section assignments
+        faculty_dept_sections = data.pop('faculty_department_sections', None)
+        if faculty_dept_sections is not None and target.role == 'faculty':
+            # Delete existing assignments
+            FacultyDepartmentSection.objects.filter(faculty=target).delete()
+            # Create new assignments
+            for assignment in faculty_dept_sections:
+                dept_code = assignment.get('department_code')
+                section_name = assignment.get('section_name')
+                if dept_code and section_name:
+                    try:
+                        department = Department.objects.get(code=dept_code)
+                        section = Section.objects.get(name=section_name)
+                        FacultyDepartmentSection.objects.create(
+                            faculty=target,
+                            department=department,
+                            section=section
+                        )
+                    except (Department.DoesNotExist, Section.DoesNotExist):
+                        # Skip invalid assignments
+                        pass
+        if 'is_detained' in data:
+            if not is_admin or target.role != 'student':
+                data.pop('is_detained', None)
+        serializer = UserSerializer(target, data=data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            out = serializer.data
+            if is_admin and target.role in ('student', 'faculty') and target.visible_password:
+                out['visible_password'] = target.visible_password
+            return Response(out)
+        return Response(serializer.errors, status=400)
+
+    elif request.method == 'DELETE':
+        if not is_admin:
+            return Response({"detail": "Only admin can delete users."}, status=403)
+        if is_self:
+            return Response({"detail": "You cannot delete your own account."}, status=400)
+        if target.is_superuser:
+            return Response({"detail": "Cannot delete superuser."}, status=400)
+        target.delete()
+        return Response(status=204)
+
+
+# --- Departments (Branches) - GET allowed for all authenticated (e.g. student profile edit); POST admin only ---
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def department_list_view(request):
+    if request.method == 'GET':
+        qs = Department.objects.all().order_by('code')
+        return Response(DepartmentSerializer(qs, many=True).data)
+    if request.user.role != 'admin' and not request.user.is_superuser:
+        return Response({"detail": "Admin only."}, status=403)
+    # POST
+    serializer = DepartmentSerializer(data=request.data)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data, status=201)
+    return Response(serializer.errors, status=400)
+
+
+@api_view(['GET', 'PATCH', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def department_detail_view(request, pk):
+    try:
+        dept = Department.objects.get(pk=pk)
+    except Department.DoesNotExist:
+        return Response({"detail": "Not found."}, status=404)
+    if request.method == 'GET':
+        return Response(DepartmentSerializer(dept).data)
+    if request.user.role != 'admin' and not request.user.is_superuser:
+        return Response({"detail": "Admin only."}, status=403)
+    if request.method == 'PATCH':
+        serializer = DepartmentSerializer(dept, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+    if request.method == 'DELETE':
+        dept.delete()
+        return Response(status=204)
+
+
+# --- Sections: GET allowed for admin + faculty (for Mark Attendance dropdown); POST/DELETE admin only ---
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def section_list_view(request):
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    is_faculty = request.user.role == 'faculty'
+    is_student = request.user.role == 'student'
+    if request.method == 'POST' and not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+    if request.method == 'GET' and not is_admin and not is_faculty and not is_student:
+        return Response({"detail": "Not allowed."}, status=403)
+    if request.method == 'GET':
+        try:
+            qs = Section.objects.all().order_by('name')
+            return Response(SectionSerializer(qs, many=True).data)
+        except Exception:
+            return Response({"detail": "Sections table missing. Run: python manage.py migrate"}, status=500)
+    # POST
+    name = (request.data.get('name') or '').strip()
+    if not name:
+        return Response({"name": ["This field is required."]}, status=400)
+    try:
+        if Section.objects.filter(name=name).exists():
+            return Response({"name": ["A section with this name already exists."]}, status=400)
+        section = Section.objects.create(name=name)
+        return Response(SectionSerializer(section).data, status=201)
+    except Exception:
+        return Response({"detail": "Could not save section. Run migrations: python manage.py migrate"}, status=500)
+
+
+@api_view(['GET', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def section_detail_view(request, pk):
+    if request.user.role != 'admin' and not request.user.is_superuser:
+        return Response({"detail": "Admin only."}, status=403)
+    try:
+        section = Section.objects.get(pk=pk)
+    except Section.DoesNotExist:
+        return Response({"detail": "Not found."}, status=404)
+    if request.method == 'GET':
+        return Response(SectionSerializer(section).data)
+    if request.method == 'DELETE':
+        section.delete()
+        return Response(status=204)
+
+
+# --- Subjects: GET allowed for admin + faculty (so faculty portal can load assigned subjects), POST admin only ---
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def subject_list_view(request):
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    is_faculty = request.user.role == 'faculty'
+    if request.method == 'POST' and not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+    if request.method == 'GET' and not is_admin and not is_faculty:
+        return Response({"detail": "Not allowed."}, status=403)
+    if request.method == 'GET':
+        qs = Subject.objects.prefetch_related('departments').all().order_by('year', 'semester', 'code', 'id')
+        department = request.query_params.get('department', '').strip()
+        if department:
+            qs = qs.filter(departments__code=department)
+        year = request.query_params.get('year', '').strip()
+        if year:
+            qs = qs.filter(year=year)
+        semester = request.query_params.get('semester', '').strip()
+        if semester:
+            qs = qs.filter(semester=semester)
+        return Response(SubjectSerializer(qs.distinct(), many=True).data)
+    # POST: require departments (ids or codes), year and semester optional (default '1')
+    data = request.data.copy()
+    raw_departments = data.get('departments')
+    if not raw_departments:
+        legacy_department = data.get('department')
+        raw_departments = [legacy_department] if legacy_department else []
+    if not isinstance(raw_departments, (list, tuple)):
+        raw_departments = [raw_departments]
+    dept_ids = []
+    for dept_value in raw_departments:
+        dept = Department.objects.filter(pk=dept_value).first() or Department.objects.filter(code=dept_value).first()
+        if not dept:
+            return Response({"departments": [f"Department '{dept_value}' not found."]}, status=400)
+        dept_ids.append(dept.id)
+    if not dept_ids:
+        return Response({"departments": ["At least one department is required."]}, status=400)
+    data['departments'] = sorted(set(dept_ids))
+    if data.get('year') in (None, ''):
+        data['year'] = '1'
+    if data.get('semester') in (None, ''):
+        data['semester'] = '1'
+    serializer = SubjectSerializer(data=data)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data, status=201)
+    return Response(serializer.errors, status=400)
+
+
+@api_view(['GET', 'PATCH', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def subject_detail_view(request, pk):
+    if request.user.role != 'admin' and not request.user.is_superuser:
+        return Response({"detail": "Admin only."}, status=403)
+    try:
+        subj = Subject.objects.prefetch_related('departments').get(pk=pk)
+    except Subject.DoesNotExist:
+        return Response({"detail": "Not found."}, status=404)
+    if request.method == 'GET':
+        return Response(SubjectSerializer(subj).data)
+    if request.method == 'PATCH':
+        data = request.data.copy()
+        if 'departments' in data or 'department' in data:
+            raw_departments = data.get('departments')
+            if raw_departments is None:
+                raw_departments = [data.get('department')] if data.get('department') else []
+            if not isinstance(raw_departments, (list, tuple)):
+                raw_departments = [raw_departments]
+            dept_ids = []
+            for dept_value in raw_departments:
+                dept = Department.objects.filter(pk=dept_value).first() or Department.objects.filter(code=dept_value).first()
+                if not dept:
+                    return Response({"departments": [f"Department '{dept_value}' not found."]}, status=400)
+                dept_ids.append(dept.id)
+            data['departments'] = sorted(set(dept_ids))
+        serializer = SubjectSerializer(subj, data=data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+    if request.method == 'DELETE':
+        subj.delete()
+        return Response(status=204)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def bulk_student_upload_view(request):
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+
+    upload = request.FILES.get('file')
+    if not upload:
+        return Response({"detail": "No file uploaded. Use form field 'file'."}, status=400)
+    if not str(upload.name).lower().endswith('.xlsx'):
+        return Response({"detail": "Invalid file type. Please upload an .xlsx file."}, status=400)
+
+    try:
+        if hasattr(upload, 'seek'):
+            upload.seek(0)
+        wb = load_workbook(filename=upload, data_only=True)
+    except Exception:
+        return Response({"detail": "Could not read Excel file. Make sure it is a valid .xlsx file."}, status=400)
+
+    ws = wb.active
+    # Ensure full sheet is read: sheet dimensions are often wrong, so read at least 5000 rows
+    max_row = getattr(ws, 'max_row', None) or 0
+    read_max_row = max(max_row, 5000)
+    rows = list(ws.iter_rows(min_row=1, max_row=read_max_row, values_only=True))
+    if not rows:
+        return Response({"detail": "Excel file is empty."}, status=400)
+
+    header_row = rows[0]
+    headers = [str(v).strip().lower() if v is not None else '' for v in header_row]
+    required_cols = ['full_name', 'roll_number', 'email', 'department', 'section', 'year']
+    missing = [c for c in required_cols if c not in headers]
+    if missing:
+        return Response(
+            {
+                "detail": "Missing required columns in header row.",
+                "missing_columns": missing,
+                "expected_columns": required_cols,
+                "received_headers": headers,
+            },
+            status=400,
+        )
+
+    idx = {name: headers.index(name) for name in required_cols}
+
+    created_count = 0
+    skipped_existing = 0
+    updated_count = 0
+    skipped_invalid = 0
+    error_rows = []
+
+    for row_number, row in enumerate(rows[1:], start=2):
+        if row is None:
+            continue
+        if all((cell is None or str(cell).strip() == '') for cell in row):
+            continue
+
+        def _get(col_name):
+            i = idx[col_name]
+            if i >= len(row):
+                return ''
+            value = row[i]
+            return '' if value is None else str(value).strip()
+
+        full_name = _get('full_name')
+        roll_number = _get('roll_number')
+        email = _get('email')
+        department = _get('department')
+        section_cell = _get('section')
+        # Multiple sections: comma- or semicolon-separated (e.g. "A,B" or "A; B")
+        section = ','.join(
+            x.strip() for x in section_cell.replace(';', ',').split(',') if x.strip()
+        )
+        year = _get('year')
+
+        if not roll_number or not email:
+            skipped_invalid += 1
+            error_rows.append({"row": row_number, "reason": "Missing roll_number or email."})
+            continue
+
+        if User.objects.filter(roll_number=roll_number, role='student').exists():
+            skipped_existing += 1
+            continue
+
+        username_base = roll_number or email.split('@')[0]
+        username = username_base
+        suffix = 1
+        while User.objects.filter(username=username).exists():
+            username = f"{username_base}_{suffix}"
+            suffix += 1
+
+        password = roll_number
+
+        try:
+            user = User.objects.create_user(
+                username=username,
+                email=email,
+                password=password,
+                role='student',
+                full_name=full_name or username,
+                roll_number=roll_number,
+                department=department,
+                section=section,
+                year=str(year) if year is not None else '',
+            )
+            user.visible_password = password
+            user.save(update_fields=['visible_password'])
+        except Exception as exc:
+            skipped_invalid += 1
+            error_rows.append({"row": row_number, "reason": f"Failed to create user: {exc.__class__.__name__}"})
+            continue
+
+        created_count += 1
+
+    return Response(
+        {
+            "created": created_count,
+            "skipped_existing": skipped_existing,
+            "skipped_invalid": skipped_invalid,
+            "total_processed_rows": len(rows) - 1,
+            "errors": error_rows,
+            "note": "New student accounts use roll_number as initial password.",
+        }
+    )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def bulk_faculty_upload_view(request):
+    """Admin: bulk create faculty from Excel (.xlsx).
+
+    Expected header columns (case-insensitive):
+    - full_name
+    - email
+    - department  (branch code, e.g. CSE; comma/semicolon for multiple)
+    - phone       (optional)
+    - subjects    (optional; comma/semicolon separated subject codes)
+    - password    (optional; if blank, uses email local-part)
+    """
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+
+    upload = request.FILES.get('file')
+    if not upload:
+        return Response({"detail": "No file uploaded. Use form field 'file'."}, status=400)
+    if not str(upload.name).lower().endswith('.xlsx'):
+        return Response({"detail": "Invalid file type. Please upload an .xlsx file."}, status=400)
+
+    try:
+        if hasattr(upload, 'seek'):
+            upload.seek(0)
+        wb = load_workbook(filename=upload, data_only=True)
+    except Exception:
+        return Response({"detail": "Could not read Excel file. Make sure it is a valid .xlsx file."}, status=400)
+
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return Response({"detail": "Excel file is empty."}, status=400)
+
+    header_row = rows[0]
+    headers = [str(v).strip().lower() if v is not None else '' for v in header_row]
+    required_cols = ['full_name', 'email', 'department']
+    missing = [c for c in required_cols if c not in headers]
+    if missing:
+        return Response(
+            {
+                "detail": "Missing required columns in header row.",
+                "missing_columns": missing,
+                "expected_columns": required_cols + ['phone', 'subjects', 'password'],
+                "received_headers": headers,
+            },
+            status=400,
+        )
+
+    def _col(name: str) -> int | None:
+        return headers.index(name) if name in headers else None
+
+    idx_full = _col('full_name')
+    idx_email = _col('email')
+    idx_dept = _col('department')
+    idx_phone = _col('phone')
+    idx_subjects = _col('subjects')
+    idx_password = _col('password')
+
+    created_count = 0
+    skipped_existing = 0
+    skipped_invalid = 0
+    error_rows: list[dict] = []
+
+    all_subjects = list(Subject.objects.all().only('id', 'code', 'name'))
+
+    def _get(row, i):
+        if i is None or i >= len(row):
+            return ''
+        v = row[i]
+        return '' if v is None else str(v).strip()
+
+    for row_number, row in enumerate(rows[1:], start=2):
+        if row is None or all((cell is None or str(cell).strip() == '') for cell in row):
+            continue
+        full_name = _get(row, idx_full)
+        email = _get(row, idx_email)
+        dept_cell = _get(row, idx_dept)
+        phone = _get(row, idx_phone)
+        subjects_cell = _get(row, idx_subjects)
+        password_cell = _get(row, idx_password)
+
+        if not email or not dept_cell:
+            skipped_invalid += 1
+            error_rows.append({"row": row_number, "reason": "Missing email or department."})
+            continue
+
+        if User.objects.filter(email__iexact=email, role='faculty').exists():
+            skipped_existing += 1
+            continue
+
+        username_base = email.split('@')[0]
+        username = username_base
+        suffix = 1
+        while User.objects.filter(username=username).exists():
+            username = f"{username_base}_{suffix}"
+            suffix += 1
+        raw_password = password_cell or username_base
+
+        # Departments: store as comma-separated codes (no validation, to keep flexible)
+        dept_value = ','.join(
+            [p.strip() for p in re.split(r'[;,]+', dept_cell) if p and str(p).strip()]
+        )
+
+        try:
+            user = User.objects.create_user(
+                username=username,
+                email=email,
+                password=raw_password,
+                role='faculty',
+                full_name=full_name or username,
+                phone=phone or '',
+                department=dept_value,
+            )
+            user.visible_password = raw_password
+            # subjects: codes -> ids
+            if subjects_cell:
+                tokens = [p.strip() for p in re.split(r'[;,]+', subjects_cell) if p and str(p).strip()]
+                ids: list[str] = []
+                for token in tokens:
+                    if not token:
+                        continue
+                    subj = next(
+                        (s for s in all_subjects if str(s.code or '').lower() == token.lower() or str(s.name or '').lower() == token.lower()),
+                        None,
+                    )
+                    if subj:
+                        ids.append(str(subj.id))
+                if ids:
+                    user.assigned_subject_ids = ','.join(sorted(set(ids)))
+            user.save(update_fields=['visible_password', 'assigned_subject_ids'])
+        except Exception as exc:
+            skipped_invalid += 1
+            error_rows.append({"row": row_number, "reason": f"Failed to create faculty: {exc.__class__.__name__}"})
+            continue
+
+        created_count += 1
+
+    return Response(
+        {
+            "created": created_count,
+            "skipped_existing": skipped_existing,
+            "skipped_invalid": skipped_invalid,
+            "total_processed_rows": len(rows) - 1,
+            "errors": error_rows,
+            "note": "New faculty accounts use the password column (or email prefix if blank).",
+        }
+    )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def bulk_subject_upload_view(request):
+    """Admin: bulk create/update subjects from Excel (.xlsx).
+
+    Expected columns (case-insensitive):
+    - code
+    - name
+    - department_codes   (comma/semicolon separated department codes)
+    - year
+    - semester
+    """
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+
+    upload = request.FILES.get('file')
+    if not upload:
+        return Response({"detail": "No file uploaded. Use form field 'file'."}, status=400)
+    if not str(upload.name).lower().endswith('.xlsx'):
+        return Response({"detail": "Invalid file type. Please upload an .xlsx file."}, status=400)
+
+    try:
+        if hasattr(upload, 'seek'):
+            upload.seek(0)
+        wb = load_workbook(filename=upload, data_only=True)
+    except Exception:
+        return Response({"detail": "Could not read Excel file. Make sure it is a valid .xlsx file."}, status=400)
+
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return Response({"detail": "Excel file is empty."}, status=400)
+
+    header_row = rows[0]
+    headers = [str(v).strip().lower() if v is not None else '' for v in header_row]
+    required_cols = ['code', 'name', 'department_codes']
+    missing = [c for c in required_cols if c not in headers]
+    if missing:
+        return Response(
+            {
+                "detail": "Missing required columns in header row.",
+                "missing_columns": missing,
+                "expected_columns": required_cols + ['year', 'semester'],
+                "received_headers": headers,
+            },
+            status=400,
+        )
+
+    idx_code = headers.index('code')
+    idx_name = headers.index('name')
+    idx_dept_codes = headers.index('department_codes')
+    idx_year = headers.index('year') if 'year' in headers else None
+    idx_semester = headers.index('semester') if 'semester' in headers else None
+
+    created = 0
+    updated = 0
+    skipped_invalid = 0
+    error_rows: list[dict] = []
+
+    dept_by_code = {d.code: d for d in Department.objects.all()}
+
+    def _cell(row, i):
+        if i is None or i >= len(row):
+            return ''
+        v = row[i]
+        return '' if v is None else str(v).strip()
+
+    for row_number, row in enumerate(rows[1:], start=2):
+        if row is None or all((cell is None or str(cell).strip() == '') for cell in row):
+            continue
+        code = _cell(row, idx_code)
+        name = _cell(row, idx_name)
+        dept_codes_raw = _cell(row, idx_dept_codes)
+        year = _cell(row, idx_year) or '1'
+        semester = _cell(row, idx_semester) or '1'
+
+        if not code or not name or not dept_codes_raw:
+            skipped_invalid += 1
+            error_rows.append({"row": row_number, "reason": "Missing code, name, or department_codes."})
+            continue
+
+        tokens = [p.strip() for p in re.split(r'[;,]+', dept_codes_raw) if p and str(p).strip()]
+        dept_ids: list[int] = []
+        for token in tokens:
+            d = dept_by_code.get(token)
+            if not d:
+                # ignore unknown department codes but log once per row
+                continue
+            dept_ids.append(d.id)
+        if not dept_ids:
+            skipped_invalid += 1
+            error_rows.append({"row": row_number, "reason": "No valid department_codes found for this row."})
+            continue
+
+        subj, created_flag = Subject.objects.get_or_create(
+            code=code,
+            year=str(year),
+            semester=str(semester),
+            defaults={"name": name},
+        )
+        if created_flag:
+            created += 1
+        else:
+            if subj.name != name:
+                subj.name = name
+                subj.save(update_fields=['name'])
+            updated += 1
+        subj.departments.set(dept_ids)
+
+    return Response(
+        {
+            "created": created,
+            "updated": updated,
+            "skipped_invalid": skipped_invalid,
+            "total_processed_rows": len(rows) - 1,
+            "errors": error_rows,
+        }
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def export_attendance_excel_view(request):
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+
+    wb = Workbook()
+
+    # Students sheet
+    ws_students = wb.active
+    ws_students.title = "Students"
+    ws_students.append(
+        ["Roll Number", "Name", "Email", "Department", "Section", "Year", "Phone"]
+    )
+    for u in User.objects.filter(role="student").order_by("id"):
+        ws_students.append(
+            [
+                u.roll_number or "",
+                u.full_name or u.username,
+                u.email or "",
+                u.department or "",
+                u.section or "",
+                u.year or "",
+                u.phone or "",
+            ]
+        )
+
+    # Faculty sheet
+    ws_faculty = wb.create_sheet("Faculty")
+    ws_faculty.append(["Name", "Email", "Department", "Phone"])
+    for u in User.objects.filter(role="faculty").order_by("id"):
+        ws_faculty.append(
+            [
+                u.full_name or u.username,
+                u.email or "",
+                u.department or "",
+                u.phone or "",
+            ]
+        )
+
+    # Admins sheet
+    ws_admins = wb.create_sheet("Admins")
+    ws_admins.append(["Name", "Email"])
+    for u in User.objects.filter(role="admin").order_by("id"):
+        ws_admins.append([u.full_name or u.username, u.email or ""])
+
+    # Departments sheet
+    ws_depts = wb.create_sheet("Departments")
+    ws_depts.append(["Code", "Name"])
+    for d in Department.objects.all().order_by("code"):
+        ws_depts.append([d.code, d.name])
+
+    # Subjects sheet
+    ws_subjects = wb.create_sheet("Subjects")
+    ws_subjects.append(["Code", "Name", "Department Codes", "Year", "Semester"])
+    for s in Subject.objects.prefetch_related("departments").all().order_by(
+        "year", "semester", "code", "id"
+    ):
+        dept_codes = ",".join(sorted(s.departments.values_list("code", flat=True)))
+        ws_subjects.append(
+            [
+                s.code,
+                s.name,
+                dept_codes,
+                s.year,
+                s.semester,
+            ]
+        )
+
+    # Attendance sheet
+    ws_att = wb.create_sheet("Attendance")
+    ws_att.append(["Date", "Student Roll Number", "Subject", "Status", "attended_hours", "total_hours"])
+    student_by_id = {
+        u.id: u for u in User.objects.filter(role="student").only("id", "roll_number")
+    }
+    for a in Attendance.objects.all().order_by("date", "id"):
+        student = student_by_id.get(a.student_id)
+        ws_att.append(
+            [
+                a.date.isoformat() if a.date else "",
+                student.roll_number if student and student.roll_number else "",
+                a.subject or "",
+                a.status or "",
+                float(a.hours) if a.hours is not None else "",
+                float(a.total_hours) if a.total_hours is not None else "",
+            ]
+        )
+
+    response = HttpResponse(
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    response["Content-Disposition"] = 'attachment; filename="attendance_data.xlsx"'
+    wb.save(response)
+    return response
+
+
+def _parse_query_multi(request, *names):
+    """Collect repeated query params or comma/semicolon-separated values from first matching name."""
+    for name in names:
+        vals = request.query_params.getlist(name)
+        if vals:
+            out = []
+            for v in vals:
+                if v is None:
+                    continue
+                for part in re.split(r'[,;]+', str(v).strip()):
+                    p = part.strip()
+                    if p and p not in out:
+                        out.append(p)
+            if out:
+                return out
+        single = (request.query_params.get(name) or '').strip()
+        if single:
+            return [p.strip() for p in re.split(r'[,;]+', single) if p.strip()]
+    return []
+
+
+def _student_section_tokens(section_raw):
+    return {p.strip().lower() for p in re.split(r'[,;]+', section_raw or '') if p.strip()}
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def export_attendance_date_wise_excel_view(request):
+    """Admin: one sheet per request — roll number, name, branch, section, subject, date, attended hours, total hours.
+    Optional filters: from_date, to_date (YYYY-MM-DD), branch (repeat or comma), year, section, subject."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+
+    branches = _parse_query_multi(request, 'branch', 'branches')
+    years = _parse_query_multi(request, 'year', 'years')
+    sections = _parse_query_multi(request, 'section', 'sections')
+    subjects = _parse_query_multi(request, 'subject', 'subjects')
+
+    branch_lower = {b.lower() for b in branches}
+    year_set = set(years)
+    section_lower = {s.lower() for s in sections}
+    subject_lower = {s.lower() for s in subjects}
+
+    from_date_str = (request.query_params.get('from_date') or '').strip()
+    to_date_str = (request.query_params.get('to_date') or '').strip()
+    from_date = to_date = None
+    try:
+        if from_date_str:
+            from_date = datetime.date.fromisoformat(from_date_str)
+        if to_date_str:
+            to_date = datetime.date.fromisoformat(to_date_str)
+    except ValueError:
+        from_date = to_date = None
+
+    qs = (
+        Attendance.objects.select_related('student')
+        .filter(student__role='student')
+        .order_by('date', 'student__roll_number', 'subject', 'id')
+    )
+    if from_date:
+        qs = qs.filter(date__gte=from_date)
+    if to_date:
+        qs = qs.filter(date__lte=to_date)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Date wise'
+    ws.append(
+        ['Roll number', 'Name', 'Branch', 'Section', 'Subject', 'Date', 'Attended hours', 'Total hours'],
+    )
+
+    for a in qs.iterator(chunk_size=500):
+        stu = a.student
+        dept = (stu.department or '').strip()
+        if branch_lower and dept.lower() not in branch_lower:
+            continue
+        yr = (stu.year or '').strip()
+        if year_set and yr not in year_set:
+            continue
+        sec_display = (stu.section or '').strip()
+        if section_lower and not section_lower.intersection(_student_section_tokens(sec_display)):
+            continue
+        subj = (a.subject or '').strip()
+        if subject_lower and subj.lower() not in subject_lower:
+            continue
+
+        th = a.total_hours
+        h = a.hours
+        status_l = str(a.status or '').lower()
+        if th is not None and float(th) > 0:
+            tot_h = float(th)
+            if h is not None:
+                att_h = float(h)
+            else:
+                att_h = tot_h if status_l == 'present' else 0.0
+        else:
+            tot_h = 1.0
+            att_h = 1.0 if status_l == 'present' else 0.0
+
+        ws.append(
+            [
+                stu.roll_number or '',
+                stu.full_name or stu.username or '',
+                dept,
+                sec_display,
+                subj,
+                a.date.isoformat() if a.date else '',
+                att_h,
+                tot_h,
+            ],
+        )
+
+    fname = f'attendance_date_wise_{datetime.date.today().isoformat()}.xlsx'
+    response = HttpResponse(
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    response['Content-Disposition'] = f'attachment; filename="{fname}"'
+    wb.save(response)
+    return response
+
+
+def _parse_float_cell(value):
+    """Parse a cell value to float; return None if empty or invalid."""
+    if value is None or (isinstance(value, str) and value.strip() == ''):
+        return None
+    try:
+        s = str(value).strip().replace(',', '.')
+        return round(float(s), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_multi_float_cell(raw_value):
+    """Parse a cell into a list of floats: single number -> [x], multiple (comma/semicolon separated) -> [x, y, ...]. Returns (list, None) or ([], error_msg)."""
+    if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+        return [], "Missing value(s)."
+    if isinstance(raw_value, (int, float)):
+        try:
+            v = round(float(raw_value), 2)
+            return [v], None
+        except (TypeError, ValueError):
+            return [], f"Invalid number '{raw_value}'."
+    text = str(raw_value).strip()
+    parts = re.split(r'[,;\n]+', text)
+    out = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            v = round(float(part.replace(',', '.')), 2)
+            out.append(v)
+        except (TypeError, ValueError):
+            return [], f"Invalid number in '{part}'."
+    if not out:
+        return [], f"Invalid or missing number(s) in '{text}'."
+    return out, None
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def bulk_attendance_upload_view(request):
+    """Upload attendance in bulk from an Excel (.xlsx) file.
+
+    Required columns: roll_number, subject, and either date (single) or dates (multiple).
+    - date / dates: one or multiple dates (comma/semicolon separated). One record per date.
+    - attended_hours / total_hours: one value (applies to all dates) or multiple (comma/semicolon separated)
+      in the same order as dates, so each date gets the corresponding attended_hours and total_hours.
+    Optional: status (when hours not provided). Duplicates are skipped. Returns created, skipped, errors.
+    """
+    if request.user.role not in ['admin', 'faculty'] and not request.user.is_superuser:
+        return Response({"detail": "Only admin or faculty can upload attendance."}, status=403)
+    is_faculty = request.user.role == 'faculty' and not request.user.is_superuser
+    ctrl = _get_attendance_portal_control()
+    if request.user.role == 'faculty' and ctrl.freeze_faculty_portal and not request.user.is_superuser:
+        return Response({"detail": "Attendance portal is currently frozen for faculty."}, status=423)
+
+    upload = request.FILES.get('file')
+    if not upload:
+        return Response({"detail": "No file uploaded. Use form field 'file'."}, status=400)
+    if not str(upload.name).lower().endswith('.xlsx'):
+        return Response({"detail": "Invalid file type. Please upload an .xlsx file."}, status=400)
+
+    try:
+        wb = load_workbook(filename=upload, data_only=True)
+    except Exception:
+        return Response({"detail": "Could not read Excel file. Make sure it is a valid .xlsx file."}, status=400)
+
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return Response({"detail": "Excel file is empty."}, status=400)
+
+    header_row = rows[0]
+    headers = [str(v).strip().lower() if v is not None else '' for v in header_row]
+    has_date_col = 'date' in headers
+    has_dates_col = 'dates' in headers
+    if not has_date_col and not has_dates_col:
+        return Response(
+            {
+                "detail": "Missing required columns. Provide either 'date' (single date per row) or 'dates' (multiple dates in one cell, comma/semicolon separated).",
+                "missing_columns": ["date or dates"],
+                "expected_columns": ["roll_number", "subject", "date OR dates", "(status OR attended_hours + total_hours)"],
+                "received_headers": headers,
+            },
+            status=400,
+        )
+    required_cols = ['roll_number', 'subject']
+    missing = [c for c in required_cols if c not in headers]
+    if missing:
+        return Response(
+            {
+                "detail": "Missing required columns in header row.",
+                "missing_columns": missing,
+                "expected_columns": required_cols + ['date OR dates', '(status OR attended_hours + total_hours)'],
+                "received_headers": headers,
+            },
+            status=400,
+        )
+
+    idx = {name: headers.index(name) for name in required_cols}
+    idx['date'] = headers.index('date') if has_date_col else headers.index('dates')
+    has_status = 'status' in headers
+    has_attended_hours = 'attended_hours' in headers
+    has_total_hours = 'total_hours' in headers
+    if has_status:
+        idx['status'] = headers.index('status')
+    if has_attended_hours:
+        idx['attended_hours'] = headers.index('attended_hours')
+    if has_total_hours:
+        idx['total_hours'] = headers.index('total_hours')
+
+    # Backward compatibility: accept 'hours' as attended_hours if attended_hours not present
+    if not has_attended_hours and 'hours' in headers:
+        has_attended_hours = True
+        idx['attended_hours'] = headers.index('hours')
+
+    students_by_roll = {
+        (u.roll_number or '').strip().upper(): u
+        for u in User.objects.filter(role='student').exclude(roll_number__isnull=True)
+    }
+
+    created_count = 0
+    updated_count = 0
+    skipped_existing = 0
+    skipped_missing_student = 0
+    skipped_missing_subject = 0
+    skipped_invalid = 0
+    error_rows = []
+
+    def parse_date(value):
+        if isinstance(value, datetime.date):
+            return value if not isinstance(value, datetime.datetime) else value.date()
+        if isinstance(value, datetime.datetime):
+            return value.date()
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            try:
+                serial = int(round(value))
+                if serial < 1:
+                    return None
+                return (datetime.datetime(1899, 12, 31) + datetime.timedelta(days=serial)).date()
+            except (ValueError, OverflowError):
+                return None
+        text = str(value).strip()
+        if not text:
+            return None
+        for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+            try:
+                return datetime.datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    def parse_dates_cell(raw_value, row_number):
+        """Return list of date objects from one cell: single date or multiple (comma/semicolon separated)."""
+        if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+            return [], "Missing date(s)."
+        if isinstance(raw_value, (int, float)):
+            d = parse_date(raw_value)
+            return ([d], None) if d else ([], f"Invalid date value '{raw_value}'.")
+        if isinstance(raw_value, (datetime.date, datetime.datetime)):
+            d = parse_date(raw_value)
+            return ([d], None) if d else ([], f"Invalid date.")
+        text = str(raw_value).strip()
+        parts = re.split(r'[,;\n]+', text)
+        out = []
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            d = parse_date(part)
+            if not d and part.replace('.', '', 1).replace('-', '', 1).isdigit():
+                try:
+                    d = parse_date(float(part))
+                except (TypeError, ValueError):
+                    pass
+            if d:
+                out.append(d)
+        if not out:
+            return [], f"Invalid or missing date(s) in '{text}'."
+        return out, None
+
+    def _get(col_name):
+        if col_name not in idx:
+            return ''
+        i = idx[col_name]
+        if i >= len(row):
+            return ''
+        value = row[i]
+        return '' if value is None else str(value).strip()
+
+    for row_number, row in enumerate(rows[1:], start=2):
+        if row is None:
+            continue
+        if all((cell is None or str(cell).strip() == '') for cell in row):
+            continue
+
+        roll_number = _get('roll_number')
+        subject_raw = _get('subject')
+        date_raw = row[idx['date']] if idx['date'] < len(row) else None
+
+        if not roll_number or not subject_raw:
+            skipped_invalid += 1
+            error_rows.append({"row": row_number, "reason": "Missing roll_number or subject."})
+            continue
+
+        student = students_by_roll.get(roll_number.strip().upper())
+        if not student:
+            skipped_missing_student += 1
+            error_rows.append({"row": row_number, "reason": f"Student with roll_number '{roll_number}' not found."})
+            continue
+
+        subj = Subject.objects.filter(name__iexact=subject_raw).first() or Subject.objects.filter(code__iexact=subject_raw).first()
+        if not subj:
+            skipped_missing_subject += 1
+            error_rows.append({"row": row_number, "reason": f"Subject '{subject_raw}' not found."})
+            continue
+
+        subject_value = subj.code or subj.name or subject_raw
+
+        date_cell = row[idx['date']] if idx['date'] < len(row) else None
+        date_list, date_err = parse_dates_cell(date_cell, row_number)
+        if date_err or not date_list:
+            skipped_invalid += 1
+            error_rows.append({"row": row_number, "reason": date_err or "Invalid or missing date(s)."})
+            continue
+
+        # Resolve attended_hours and total_hours: support single value or multiple (comma/semicolon separated) matching each date
+        raw_attended = row[idx['attended_hours']] if has_attended_hours and idx['attended_hours'] < len(row) else None
+        raw_total = row[idx['total_hours']] if has_total_hours and idx['total_hours'] < len(row) else None
+        attended_list, attended_err = _parse_multi_float_cell(raw_attended) if (raw_attended is not None and str(raw_attended).strip() != '') else ([], None)
+        total_list, total_err = _parse_multi_float_cell(raw_total) if (raw_total is not None and str(raw_total).strip() != '') else ([], None)
+
+        if attended_err and has_attended_hours and (raw_attended is not None and str(raw_attended).strip() != ''):
+            skipped_invalid += 1
+            error_rows.append({"row": row_number, "reason": attended_err})
+            continue
+        if total_err and has_total_hours and (raw_total is not None and str(raw_total).strip() != ''):
+            skipped_invalid += 1
+            error_rows.append({"row": row_number, "reason": total_err})
+            continue
+
+        # Build list of (date, attended, total) per record
+        n_dates = len(date_list)
+        use_hours = len(attended_list) > 0 and len(total_list) > 0
+
+        if use_hours:
+            if n_dates == len(attended_list) == len(total_list):
+                date_hours_pairs = list(zip(date_list, attended_list, total_list))
+            elif len(attended_list) == 1 and len(total_list) == 1:
+                date_hours_pairs = [(d, attended_list[0], total_list[0]) for d in date_list]
+            elif len(attended_list) != len(total_list):
+                skipped_invalid += 1
+                error_rows.append({"row": row_number, "reason": "attended_hours and total_hours must have the same number of values (or one value each for all dates)."})
+                continue
+            else:
+                skipped_invalid += 1
+                error_rows.append({"row": row_number, "reason": f"When using {n_dates} date(s), provide {n_dates} value(s) for attended_hours and total_hours, or one value each for all dates."})
+                continue
+        else:
+            # Status-only path: default 1 hour per date
+            if not has_status:
+                skipped_invalid += 1
+                error_rows.append({"row": row_number, "reason": "When attended_hours/total_hours are not both provided, status is required."})
+                continue
+            status_raw = _get('status')
+            if not status_raw:
+                skipped_invalid += 1
+                error_rows.append({"row": row_number, "reason": "Status is required when attended_hours/total_hours are not both provided."})
+                continue
+            status_lower = status_raw.strip().lower()
+            if status_lower in ['present', 'p']:
+                status_value = 'present'
+            elif status_lower in ['absent', 'a']:
+                status_value = 'absent'
+            else:
+                skipped_invalid += 1
+                error_rows.append({"row": row_number, "reason": f"Invalid status '{status_raw}'. Use Present/Absent."})
+                continue
+            attended_hours_value = 1 if status_value == 'present' else 0
+            total_hours_value = 1
+            date_hours_pairs = [(d, attended_hours_value, total_hours_value) for d in date_list]
+
+        for date_value, attended_hours_value, total_hours_value in date_hours_pairs:
+            if use_hours:
+                if total_hours_value <= 0:
+                    skipped_invalid += 1
+                    error_rows.append({"row": row_number, "reason": "total_hours must be greater than 0."})
+                    continue
+                if attended_hours_value < 0 or attended_hours_value > total_hours_value:
+                    skipped_invalid += 1
+                    error_rows.append({"row": row_number, "reason": "attended_hours must be between 0 and total_hours."})
+                    continue
+                status_value = 'present' if attended_hours_value > 0 else 'absent'
+
+            defaults = {
+                "status": status_value,
+                "hours": attended_hours_value,
+                "total_hours": total_hours_value,
+            }
+
+            att_obj, created = Attendance.objects.get_or_create(
+                student=student,
+                subject=subject_value,
+                date=date_value,
+                defaults=defaults,
+            )
+            if created:
+                created_count += 1
+            else:
+                if is_faculty:
+                    skipped_existing += 1
+                    error_rows.append({
+                        "row": row_number,
+                        "reason": "Attendance already exists for this student/subject/date. Only admin can modify it.",
+                    })
+                    continue
+                same_status = (att_obj.status or '') == defaults["status"]
+                existing_hours = float(att_obj.hours) if att_obj.hours is not None else None
+                existing_total_hours = float(att_obj.total_hours) if att_obj.total_hours is not None else None
+                new_hours = float(defaults["hours"]) if defaults["hours"] is not None else None
+                new_total_hours = float(defaults["total_hours"]) if defaults["total_hours"] is not None else None
+                if same_status and existing_hours == new_hours and existing_total_hours == new_total_hours:
+                    skipped_existing += 1
+                else:
+                    att_obj.status = defaults["status"]
+                    att_obj.hours = defaults["hours"]
+                    att_obj.total_hours = defaults["total_hours"]
+                    att_obj.save(update_fields=["status", "hours", "total_hours"])
+                    updated_count += 1
+
+    return Response(
+        {
+            "created": created_count,
+            "updated": updated_count,
+            "skipped": skipped_existing + skipped_missing_student + skipped_missing_subject + skipped_invalid,
+            "skipped_existing": skipped_existing,
+            "skipped_missing_student": skipped_missing_student,
+            "skipped_missing_subject": skipped_missing_subject,
+            "skipped_invalid": skipped_invalid,
+            "total_processed_rows": len(rows) - 1,
+            "errors": error_rows,
+        }
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sample_student_registration_excel_view(request):
+    """Admin: downloadable .xlsx matching students/bulk-upload column requirements."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+
+    dept_code = (
+        Department.objects.order_by('code').values_list('code', flat=True).first() or 'CSE'
+    )
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Students'
+    ws.append(['full_name', 'roll_number', 'email', 'department', 'section', 'year'])
+    ws.append(['Jane Doe', '21ABC001', 'jane.doe@example.com', dept_code, 'A', '2'])
+    ws.append(['John Smith', '21ABC002', 'john.smith@example.com', dept_code, 'A,B', '2'])
+
+    ins = wb.create_sheet('Instructions')
+    ins.append(['Template for Admin → Students → Import from Excel (.xlsx).'])
+    ins.append([])
+    ins.append(['Row 1 must be the header with these exact column names (case-insensitive):'])
+    ins.append(['full_name, roll_number, email, department, section, year'])
+    ins.append([])
+    ins.append(['Replace example rows with real students before importing.'])
+    ins.append(['roll_number and email are required per row; duplicate roll numbers are skipped.'])
+    ins.append(['section: comma or semicolon for multiple (e.g. A,B).'])
+    ins.append(['department: branch code as in Admin → Branches (sample uses: ' + dept_code + ').'])
+    ins.append(['Initial password for new students = roll_number.'])
+
+    response = HttpResponse(
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    response['Content-Disposition'] = 'attachment; filename="sample_student_registration.xlsx"'
+    wb.save(response)
+    return response
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sample_faculty_registration_excel_view(request):
+    """Admin: downloadable .xlsx for faculty bulk upload."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+
+    dept_code = (
+        Department.objects.order_by('code').values_list('code', flat=True).first() or 'CSE'
+    )
+    sample_subject = (
+        Subject.objects.order_by('year', 'semester', 'code').values_list('code', flat=True).first()
+        or 'SUB101'
+    )
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Faculty'
+    ws.append(['full_name', 'email', 'department', 'phone', 'subjects', 'password'])
+    ws.append(['Dr. Alice Example', 'alice@example.com', dept_code, '9876543210', sample_subject, 'alice@123'])
+    ws.append(['Dr. Bob Example', 'bob@example.com', dept_code, '9876500000', f'{sample_subject}; OTHER101', ''])
+
+    ins = wb.create_sheet('Instructions')
+    ins.append(['Template for Admin → Manage Faculty → Bulk import from Excel (.xlsx).'])
+    ins.append([])
+    ins.append(['Row 1 must be the header with these exact column names (case-insensitive):'])
+    ins.append(['full_name, email, department, phone, subjects, password'])
+    ins.append([])
+    ins.append(['department: branch code as in Admin → Branches (sample uses: ' + dept_code + ').'])
+    ins.append(['subjects: comma/semicolon separated subject codes (e.g. ' + sample_subject + ').'])
+    ins.append(['password: if left blank, initial password defaults to the email local-part.'])
+
+    response = HttpResponse(
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    response['Content-Disposition'] = 'attachment; filename="sample_faculty_registration.xlsx"'
+    wb.save(response)
+    return response
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sample_subjects_excel_view(request):
+    """Admin: downloadable .xlsx for subject bulk upload."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+
+    dept_codes = list(Department.objects.order_by('code').values_list('code', flat=True)[:2])
+    primary = dept_codes[0] if dept_codes else 'CSE'
+    both = '; '.join(dept_codes) if dept_codes else 'CSE; ECE'
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Subjects'
+    ws.append(['code', 'name', 'department_codes', 'year', 'semester'])
+    ws.append(['CSE101', 'Programming I', primary, '1', '1'])
+    ws.append(['CSE201', 'Data Structures', both, '2', '1'])
+
+    ins = wb.create_sheet('Instructions')
+    ins.append(['Template for Admin → Subjects → Bulk import from Excel (.xlsx).'])
+    ins.append([])
+    ins.append(['Row 1 must be the header with these column names (case-insensitive):'])
+    ins.append(['code, name, department_codes, year, semester'])
+    ins.append([])
+    ins.append(['department_codes: comma/semicolon separated branch codes (e.g. "CSE; ECE").'])
+    ins.append(['year and semester are stored as strings (e.g. "1", "2").'])
+
+    response = HttpResponse(
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    response['Content-Disposition'] = 'attachment; filename="sample_subjects.xlsx"'
+    wb.save(response)
+    return response
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sample_bulk_attendance_excel_view(request):
+    """Admin or faculty: downloadable .xlsx matching attendance/bulk-upload formats."""
+    if request.user.role not in ['admin', 'faculty'] and not request.user.is_superuser:
+        return Response({"detail": "Forbidden."}, status=403)
+
+    rolls = list(
+        User.objects.filter(role='student')
+        .exclude(roll_number__isnull=True)
+        .exclude(roll_number__exact='')
+        .order_by('id')
+        .values_list('roll_number', flat=True)[:2]
+    )
+    sample_roll = rolls[0] if rolls else '21ABC001'
+    sample_roll_b = (
+        rolls[1]
+        if len(rolls) > 1
+        else ('21ABC002' if sample_roll != '21ABC002' else '21ABC003')
+    )
+
+    sample_subj = (
+        Subject.objects.order_by('year', 'semester', 'code')
+        .values_list('code', flat=True)
+        .first()
+        or 'SUBJECT_CODE'
+    )
+
+    today = datetime.date.today().isoformat()
+    yday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Attendance'
+    ws.append(['roll_number', 'subject', 'date', 'attended_hours', 'total_hours'])
+    ws.append([sample_roll, sample_subj, today, 1, 1])
+    ws.append([sample_roll, sample_subj, yday, 0, 1])
+
+    alt = wb.create_sheet('Example_with_status')
+    alt.append(['roll_number', 'subject', 'date', 'status'])
+    alt.append([sample_roll_b, sample_subj, today, 'present'])
+    alt.append([sample_roll_b, sample_subj, yday, 'absent'])
+
+    multi = wb.create_sheet('Example_multiple_dates')
+    multi.append(['roll_number', 'subject', 'dates', 'attended_hours', 'total_hours'])
+    multi.append([sample_roll, sample_subj, f'{yday}; {today}', '1; 0', '1; 1'])
+
+    ins = wb.create_sheet('Instructions')
+    ins.append(['Bulk attendance upload uses the FIRST sheet (Attendance) by default in Excel.'])
+    ins.append(['For upload, use ONE sheet with ONE header row: either the Attendance layout or Example_with_status layout.'])
+    ins.append([])
+    ins.append(['Required: roll_number, subject, and date OR dates (comma/semicolon separated).'])
+    ins.append(['subject: must match a subject name or code in Admin → Subjects.'])
+    ins.append(['Either provide attended_hours AND total_hours, OR provide status (present/absent).'])
+    ins.append(['Other tabs in this file are reference only — copy one layout to your own file for upload.'])
+    ins.append([])
+    ins.append(['Sample roll/subject filled from your database when available; replace as needed.'])
+
+    response = HttpResponse(
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    response['Content-Disposition'] = 'attachment; filename="sample_bulk_attendance.xlsx"'
+    wb.save(response)
+    return response
+
+
+# QR Attendance API Endpoints
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def qr_attendance_sessions_view(request):
+    """Create or list QR attendance sessions."""
+    print(f"QR Attendance Sessions View - Method: {request.method}, User: {request.user.username}, Role: {request.user.role}")
+    
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    is_faculty = request.user.role == 'faculty'
+    
+    if not (is_admin or is_faculty):
+        return Response({"detail": "Faculty or admin only."}, status=403)
+    
+    if request.method == 'GET':
+        print(f"GET request for QR sessions")
+        # List sessions
+        if is_admin:
+            sessions = QRAttendanceSession.objects.all()
+        else:
+            sessions = QRAttendanceSession.objects.filter(faculty=request.user)
+        
+        # Filter by active status if requested
+        active_only = request.query_params.get('active_only', 'false').lower() == 'true'
+        if active_only:
+            sessions = sessions.filter(is_active=True, end_time__gt=timezone.now())
+        
+        serializer = QRAttendanceSessionSerializer(sessions, many=True)
+        return Response(serializer.data)
+    
+    elif request.method == 'POST':
+        # Create new session
+        print(f"POST request to create QR session")
+        print(f"User: {request.user.username}, Role: {request.user.role}")
+        print(f"Request data: {request.data}")
+        
+        # Admin can create sessions on behalf of faculty
+        faculty_id = request.data.get('faculty_id')
+        if is_admin and faculty_id:
+            try:
+                target_faculty = User.objects.get(id=faculty_id, role='faculty')
+                print(f"Admin creating session for faculty: {target_faculty.username}")
+            except User.DoesNotExist:
+                return Response({"detail": "Faculty not found."}, status=404)
+        else:
+            target_faculty = request.user
+            print(f"Faculty creating own session")
+        
+        data = request.data
+        subject = data.get('subject')
+        duration_minutes = data.get('duration_minutes', 10)
+        
+        print(f"Subject: {subject}, Duration: {duration_minutes}")
+        
+        if not subject:
+            return Response({"detail": "Subject is required."}, status=400)
+        
+        # Create session - no department/section needed
+        start_time = timezone.now()
+        end_time = start_time + datetime.timedelta(minutes=duration_minutes)
+        token_expires_at = start_time + datetime.timedelta(seconds=5)  # Initial token expires in 5 seconds
+        session_id_expires_at = start_time + datetime.timedelta(seconds=30)  # Session ID expires in 30 seconds
+        
+        try:
+            print(f"Creating session - Faculty: {target_faculty.username}, Subject: {subject}")
+            print(f"Start time: {start_time}, End time: {end_time}")
+            
+            session = QRAttendanceSession.objects.create(
+                faculty=target_faculty,
+                subject=subject,
+                year='1',  # Default, not used
+                branch='CSM',  # Default, not used
+                branches='CSM',  # Default, not used
+                sections='A',  # Default, not used
+                duration_minutes=duration_minutes,
+                end_time=end_time,
+                current_qr_token=_generate_qr_token(),
+                token_expires_at=token_expires_at,
+                custom_session_id=_generate_custom_session_id(),
+                session_id_expires_at=session_id_expires_at
+            )
+            print(f"Session created successfully: {session.id}")
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"Error creating QR session: {error_details}")
+            return Response({"detail": f"Failed to create session: {str(e)}"}, status=500)
+        
+        serializer = QRAttendanceSessionSerializer(session)
+        return Response(serializer.data, status=201)
+
+
+@api_view(['GET', 'PATCH', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def qr_attendance_session_detail_view(request, session_id):
+    """Get, update, or delete a specific QR attendance session."""
+    try:
+        session = QRAttendanceSession.objects.get(id=session_id)
+    except QRAttendanceSession.DoesNotExist:
+        return Response({"detail": "Session not found."}, status=404)
+    
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    is_faculty = request.user.role == 'faculty'
+    
+    # Check permissions
+    if not is_admin and session.faculty != request.user:
+        return Response({"detail": "You can only access your own sessions."}, status=403)
+    
+    if request.method == 'GET':
+        # Refresh token if expired
+        if timezone.now() > session.token_expires_at and session.is_active:
+            session.current_qr_token = _generate_qr_token()
+            session.token_expires_at = timezone.now() + datetime.timedelta(seconds=session.token_refresh_interval)
+            session.save()
+        
+        # Refresh custom session ID if expired
+        # Also initialize custom_session_id if it's empty (for backward compatibility)
+        if (not session.custom_session_id or timezone.now() > session.session_id_expires_at) and session.is_active:
+            old_session_id = session.custom_session_id
+            session.custom_session_id = _generate_custom_session_id()
+            session.session_id_expires_at = timezone.now() + datetime.timedelta(seconds=30)
+            session.save()
+            print(f"Session ID refreshed from {old_session_id} to {session.custom_session_id} at {timezone.now()}")
+        
+        serializer = QRAttendanceSessionSerializer(session)
+        response_data = serializer.data
+        
+        # Add QR code image using custom session ID (or database ID if custom is empty)
+        try:
+            session_id_for_qr = session.custom_session_id if session.custom_session_id else str(session.id).zfill(5)
+            response_data['qr_code_image'] = _generate_qr_code_base64(session.current_qr_token, session_id_for_qr)
+        except Exception as e:
+            response_data['qr_code_image'] = None
+        
+        return Response(response_data)
+    
+    elif request.method == 'PATCH':
+        # Update session (e.g., close it)
+        if 'is_active' in request.data:
+            session.is_active = request.data['is_active']
+            session.save()
+        
+        serializer = QRAttendanceSessionSerializer(session)
+        return Response(serializer.data)
+    
+    elif request.method == 'DELETE':
+        # Delete session
+        session.delete()
+        return Response({"detail": "Session deleted."}, status=204)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def qr_attendance_mark_view(request):
+    """Mark attendance using QR code or manual entry."""
+    qr_data = request.data.get('qr_data')  # Combined session_id:token from QR scan
+    device_id = request.data.get('device_id')
+    
+    # Support both old format (separate fields) and new format (combined QR data)
+    session_id = request.data.get('session_id')
+    qr_token = request.data.get('qr_token')
+    
+    if qr_data:
+        # Parse combined format: "session_id:token"
+        try:
+            parts = qr_data.split(':')
+            if len(parts) == 2:
+                session_id = parts[0]
+                qr_token = parts[1]
+        except:
+            return Response({"detail": "Invalid QR code format."}, status=400)
+    
+    if not all([session_id, device_id]):
+        return Response({"detail": "Session ID and device ID are required."}, status=400)
+    
+    # Validate session ID format - must be exactly 5 digits
+    if not isinstance(session_id, str) or not session_id.isdigit() or len(session_id) != 5:
+        return Response({"detail": "Session ID must be exactly 5 digits."}, status=400)
+    
+    # Only students can mark attendance
+    if request.user.role != 'student':
+        return Response({"detail": "Only students can mark attendance."}, status=403)
+    
+    session = None
+    
+    # First try to find session by custom_session_id (for rotating session IDs)
+    print(f"Looking for session with custom_session_id: {session_id}")
+    try:
+        session = QRAttendanceSession.objects.get(custom_session_id=session_id, is_active=True)
+        print(f"Found session by custom_session_id: {session.id}, expires at: {session.session_id_expires_at}, current time: {timezone.now()}")
+        
+        # Check if custom session ID has expired (with 5 second buffer)
+        if session.session_id_expires_at and timezone.now() > session.session_id_expires_at + datetime.timedelta(seconds=5):
+            print(f"Session ID expired. Current: {timezone.now()}, Expires: {session.session_id_expires_at}")
+            return Response({"detail": "Session ID has expired. Please get the new session ID from faculty."}, status=403)
+            
+    except QRAttendanceSession.DoesNotExist:
+        print(f"Session with custom_session_id {session_id} not found, trying database ID")
+        # If custom_session_id not found, try the old method with database ID
+        try:
+            session_id_int = int(session_id)
+            session = QRAttendanceSession.objects.get(id=session_id_int, is_active=True)
+            print(f"Found session by database ID: {session.id}")
+            
+            # For database ID, no expiration check needed as it's permanent
+        except (ValueError, TypeError, QRAttendanceSession.DoesNotExist):
+            print(f"Session with database ID {session_id} not found either")
+            return Response({"detail": "Invalid session ID. No active session found with this ID."}, status=404)
+    
+    if not session:
+        return Response({"detail": "Invalid session ID. No active session found."}, status=404)
+    
+    # Check if session is active
+    if not session.is_active:
+        return Response({"detail": "Attendance session is closed."}, status=403)
+    
+    # Check if session has expired
+    if timezone.now() > session.end_time:
+        return Response({"detail": "Attendance session has expired."}, status=403)
+    
+    # QR token validation is optional now - if provided, validate it
+    if qr_token:
+        # Check if QR token is valid
+        if timezone.now() > session.token_expires_at:
+            return Response({"detail": "QR code has expired. Please scan the new one."}, status=403)
+        
+        if session.current_qr_token != qr_token:
+            return Response({"detail": "Invalid QR code."}, status=403)
+    
+    # Remove all department/section/year validations - any student can attend any session
+    
+    # Check if student already marked attendance for this session
+    if QRAttendanceRecord.objects.filter(session=session, student=request.user).exists():
+        return Response({"detail": "You have already marked attendance for this session."}, status=403)
+    
+    # Check if device is already used for this session
+    hashed_device_id = _hash_device_id(device_id)
+    if QRAttendanceRecord.objects.filter(session=session, device_id=hashed_device_id).exists():
+        return Response({"detail": "This device has already been used for this session."}, status=403)
+    
+    # Create attendance record
+    record = QRAttendanceRecord.objects.create(
+        session=session,
+        student=request.user,
+        device_id=hashed_device_id
+    )
+    
+    # Also create regular attendance record
+    today = timezone.now().date()
+    existing_attendance = Attendance.objects.filter(
+        student=request.user,
+        subject=session.subject,
+        date=today
+    ).first()
+    
+    # Calculate hours from session duration
+    session_hours = round(session.duration_minutes / 60, 2)
+    
+    if existing_attendance:
+        # Update existing record
+        existing_attendance.status = 'present'
+        existing_attendance.hours = session_hours
+        existing_attendance.total_hours = session_hours
+        existing_attendance.save()
+    else:
+        # Create new record
+        Attendance.objects.create(
+            student=request.user,
+            subject=session.subject,
+            date=today,
+            status='present',
+            hours=session_hours,
+            total_hours=session_hours
+        )
+    
+    serializer = QRAttendanceRecordSerializer(record)
+    return Response({
+        "detail": "Attendance marked successfully.",
+        "record": serializer.data
+    }, status=201)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def qr_attendance_records_view(request, session_id):
+    """Get attendance records for a specific session."""
+    try:
+        session = QRAttendanceSession.objects.get(id=session_id)
+    except QRAttendanceSession.DoesNotExist:
+        return Response({"detail": "Session not found."}, status=404)
+    
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    is_faculty = request.user.role == 'faculty'
+    
+    # Check permissions
+    if not is_admin and session.faculty != request.user:
+        return Response({"detail": "You can only view records for your own sessions."}, status=403)
+    
+    records = QRAttendanceRecord.objects.filter(session=session).select_related('student')
+    serializer = QRAttendanceRecordSerializer(records, many=True)
+    return Response(serializer.data)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def mentor_assignment_view(request):
+    """API endpoint for mentor-student assignments."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    is_mentor = request.user.role == 'mentor'
+
+    if not is_admin and not is_mentor:
+        return Response({"detail": "Not authorized."}, status=403)
+
+    if request.method == 'GET':
+        if is_admin:
+            # Admin can see all assignments
+            assignments = MentorStudentAssignment.objects.all().select_related('mentor', 'student')
+        else:
+            # Mentors can only see their own assignments
+            assignments = MentorStudentAssignment.objects.filter(mentor=request.user).select_related('student')
+
+        serializer = MentorStudentAssignmentSerializer(assignments, many=True)
+        return Response(serializer.data)
+
+    elif request.method == 'POST':
+        if not is_admin:
+            return Response({"detail": "Only admins can create assignments."}, status=403)
+
+        mentor_id = request.data.get('mentor_id')
+        student_id = request.data.get('student_id')
+        notes = request.data.get('notes', '')
+
+        if not mentor_id or not student_id:
+            return Response({"detail": "mentor_id and student_id are required."}, status=400)
+
+        try:
+            mentor = User.objects.get(id=mentor_id, role='mentor')
+            student = User.objects.get(id=student_id, role='student')
+        except User.DoesNotExist:
+            return Response({"detail": "Invalid mentor or student."}, status=404)
+
+        # Check if assignment already exists
+        if MentorStudentAssignment.objects.filter(mentor=mentor, student=student).exists():
+            return Response({"detail": "This assignment already exists."}, status=400)
+
+        assignment = MentorStudentAssignment.objects.create(
+            mentor=mentor,
+            student=student,
+            notes=notes
+        )
+
+        serializer = MentorStudentAssignmentSerializer(assignment)
+        return Response(serializer.data, status=201)
+
+
+@api_view(['GET', 'PATCH', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def mentor_assignment_detail_view(request, assignment_id):
+    """API endpoint for individual mentor-student assignment operations."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    is_mentor = request.user.role == 'mentor'
+
+    if not is_admin and not is_mentor:
+        return Response({"detail": "Not authorized."}, status=403)
+
+    try:
+        assignment = MentorStudentAssignment.objects.get(id=assignment_id)
+    except MentorStudentAssignment.DoesNotExist:
+        return Response({"detail": "Assignment not found."}, status=404)
+
+    # Check permissions
+    if is_mentor and assignment.mentor != request.user:
+        return Response({"detail": "You can only access your own assignments."}, status=403)
+
+    if request.method == 'GET':
+        serializer = MentorStudentAssignmentSerializer(assignment)
+        return Response(serializer.data)
+
+    elif request.method == 'PATCH':
+        if not is_admin:
+            return Response({"detail": "Only admins can modify assignments."}, status=403)
+
+        notes = request.data.get('notes')
+        if notes is not None:
+            assignment.notes = notes
+            assignment.save()
+
+        serializer = MentorStudentAssignmentSerializer(assignment)
+        return Response(serializer.data)
+
+    elif request.method == 'DELETE':
+        if not is_admin:
+            return Response({"detail": "Only admins can delete assignments."}, status=403)
+
+        assignment.delete()
+        return Response({"detail": "Assignment deleted successfully."}, status=200)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def mentor_students_view(request, mentor_id=None):
+    """Get students assigned to a specific mentor (or current user if mentor)."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    is_mentor = request.user.role == 'mentor'
+
+    if not is_admin and not is_mentor:
+        return Response({"detail": "Not authorized."}, status=403)
+
+    # Determine target mentor
+    if mentor_id:
+        if not is_admin:
+            return Response({"detail": "Admin only."}, status=403)
+        try:
+            target_mentor = User.objects.get(id=mentor_id, role='mentor')
+        except User.DoesNotExist:
+            return Response({"detail": "Mentor not found."}, status=404)
+    else:
+        target_mentor = request.user
+        if target_mentor.role != 'mentor':
+            return Response({"detail": "Only mentors have assigned students."}, status=400)
+
+    # Get assigned students
+    assignments = MentorStudentAssignment.objects.filter(mentor=target_mentor).select_related('student')
+    students = []
+    for assignment in assignments:
+        student = assignment.student
+        students.append({
+            'id': student.id,
+            'username': student.username,
+            'email': student.email,
+            'full_name': student.full_name,
+            'roll_number': student.roll_number,
+            'department': student.department,
+            'section': student.section,
+            'year': student.year,
+            'phone': student.phone,
+            'is_detained': student.is_detained,
+            'assignment_notes': assignment.notes,
+            'assigned_at': assignment.assigned_at
+        })
+
+    return Response(students)

@@ -1,0 +1,5854 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { useAuth } from '@/contexts/AuthContext';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell
+} from 'recharts';
+import {
+  Users,
+  GraduationCap,
+  BookOpen,
+  AlertTriangle,
+  TrendingUp,
+  Calendar as CalendarIcon,
+  LogOut,
+  Settings,
+  UserPlus,
+  Download,
+  RefreshCw,
+  Upload,
+  FileSpreadsheet,
+  Plus,
+  Edit,
+  Trash2,
+  X,
+  Save,
+  CheckCircle,
+  XCircle,
+  Clock,
+  Lock,
+  Search,
+  FileDown,
+  UserCheck,
+} from 'lucide-react';
+import { Calendar } from '@/components/ui/calendar';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { cn } from '@/lib/utils';
+import { format } from 'date-fns';
+import { toast } from '@/hooks/use-toast';
+import { apiUrl, authFetch } from '@/lib/api';
+import { downloadSampleExcel } from '@/lib/downloadSampleExcel';
+import { formatStudentSectionsDisplay, parseStudentSections, studentMatchesAnySection } from '@/lib/studentSections';
+import { aggregateAttendanceHoursByStudentSubject, ATTENDANCE_REPORT_CSV_HEADERS } from '@/lib/attendanceReportCsv';
+
+type AdminDefaulterStudent = {
+  id: number;
+  full_name?: string | null;
+  roll_number?: string | null;
+  username?: string;
+  department?: string | null;
+  year?: string | null;
+  section?: string | null;
+  sections?: string[];
+};
+
+function computeAdminDefaultersList(
+  list: AdminDefaulterStudent[],
+  records: Array<{ student: number; status: string; hours?: number | null; total_hours?: number | null }>,
+): Array<AdminDefaulterStudent & { attendancePercentage: number; presentClasses: number; totalClasses: number }> {
+  const byStudent: Record<number, { attended: number; total: number }> = {};
+  records.forEach((r) => {
+    const id = r.student;
+    if (!byStudent[id]) byStudent[id] = { attended: 0, total: 0 };
+    const totalH = r.total_hours != null && Number(r.total_hours) > 0 ? Number(r.total_hours) : 1;
+    const attendedH = r.hours != null ? Number(r.hours) : (String(r.status).toLowerCase() === 'present' ? totalH : 0);
+    byStudent[id].total += totalH;
+    byStudent[id].attended += Math.max(0, Math.min(totalH, attendedH));
+  });
+  return list
+    .map((s) => {
+      const stat = byStudent[s.id] || { attended: 0, total: 0 };
+      const pct = stat.total > 0 ? (stat.attended / stat.total) * 100 : 0;
+      return {
+        ...s,
+        attendancePercentage: Math.round(pct * 100) / 100,
+        presentClasses: Math.round(stat.attended * 100) / 100,
+        totalClasses: Math.round(stat.total * 100) / 100,
+      };
+    })
+    .filter((s) => s.attendancePercentage < 85);
+}
+
+export const AdminLayout: React.FC = () => {
+  const { user, logout, updateSessionUser } = useAuth();
+  const todayForAttendance = new Date();
+  todayForAttendance.setHours(0, 0, 0, 0);
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [isImporting, setIsImporting] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [loadingError, setLoadingError] = useState<string | null>(null);
+  const [isDownloadingDateWise, setIsDownloadingDateWise] = useState(false);
+  const [isFacultyDialogOpen, setIsFacultyDialogOpen] = useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [selectedFaculty, setSelectedFaculty] = useState<string | null>(null);
+  const [isMentorDialogOpen, setIsMentorDialogOpen] = useState(false);
+  const [isMentorDeleteDialogOpen, setIsMentorDeleteDialogOpen] = useState(false);
+  const [selectedMentor, setSelectedMentor] = useState<string | null>(null);
+  const [facultyFormData, setFacultyFormData] = useState<{
+    name: string;
+    email: string;
+    password: string;
+    departmentIds: string[];
+    phone: string;
+    subjects: string[];
+    departmentSections: Array<{ departmentCode: string; sectionNames: string[] }>;
+  }>({
+    name: '',
+    email: '',
+    password: '',
+    departmentIds: [],
+    phone: '',
+    subjects: [],
+    departmentSections: []
+  });
+
+  const [mentorFormData, setMentorFormData] = useState<{
+    name: string;
+    email: string;
+    password: string;
+    phone: string;
+  }>({
+    name: '',
+    email: '',
+    password: '',
+    phone: ''
+  });
+
+  // Students from backend API (for edit after registration)
+  const [apiStudents, setApiStudents] = useState<Array<{
+    id: number;
+    username: string;
+    email: string;
+    role: string;
+    full_name: string | null;
+    roll_number: string | null;
+    phone: string | null;
+    department: string | null;
+    section: string | null;
+    sections?: string[];
+    year: string | null;
+    visible_password?: string | null;
+    is_detained?: boolean;
+  }>>([]);
+  const [studentsLoading, setStudentsLoading] = useState(false);
+  const [studentsError, setStudentsError] = useState<string | null>(null);
+  const [studentEditOpen, setStudentEditOpen] = useState(false);
+  const [studentEditForm, setStudentEditForm] = useState({
+    full_name: '',
+    roll_number: '',
+    email: '',
+    phone: '',
+    department: '',
+    sections: [] as string[],
+    year: '',
+    new_password: ''
+  });
+  const [studentEditId, setStudentEditId] = useState<number | null>(null);
+  const [studentDeleteOpen, setStudentDeleteOpen] = useState(false);
+  const [studentDeleteId, setStudentDeleteId] = useState<number | null>(null);
+  const [studentFilterDept, setStudentFilterDept] = useState<string>('__all__');
+  const [studentFilterSection, setStudentFilterSection] = useState('');
+  const [studentFilterYear, setStudentFilterYear] = useState('');
+  const [studentSearchQuery, setStudentSearchQuery] = useState('');
+  const [defaultersSearchQuery, setDefaultersSearchQuery] = useState('');
+  const [defaulterFilterYears, setDefaulterFilterYears] = useState<string[]>([]);
+  const [defaulterFilterBranches, setDefaulterFilterBranches] = useState<string[]>([]);
+  const [defaulterFilterSections, setDefaulterFilterSections] = useState<string[]>([]);
+  const [defaulterMinPct, setDefaulterMinPct] = useState<string>('0');
+  const [defaulterMaxPct, setDefaulterMaxPct] = useState<string>('85');
+  /** Students tab: filter by detention status */
+  const [studentDetentionFilter, setStudentDetentionFilter] = useState<'all' | 'active' | 'detained'>('all');
+  /** Detention tab: search both lists */
+  const [detentionTabSearch, setDetentionTabSearch] = useState('');
+  const [deleteAllStudentsOpen, setDeleteAllStudentsOpen] = useState(false);
+  const [deleteAllStudentsLoading, setDeleteAllStudentsLoading] = useState(false);
+  const [addStudentOpen, setAddStudentOpen] = useState(false);
+
+  /** QR Attendance state for Admin */
+  const [adminQrSessions, setAdminQrSessions] = useState<Array<any>>([]);
+  const [adminActiveQrSession, setAdminActiveQrSession] = useState<any>(null);
+  const [adminQrCodeImage, setAdminQrCodeImage] = useState<string | null>(null);
+  const [adminQrRefreshInterval, setAdminQrRefreshInterval] = useState<NodeJS.Timeout | null>(null);
+  const [adminQrSessionForm, setAdminQrSessionForm] = useState({
+    subject: '',
+    duration_hours: 1,
+    faculty_id: ''
+  });
+  const [adminQrSessionDialogOpen, setAdminQrSessionDialogOpen] = useState(false);
+  const [adminQrAttendanceRecords, setAdminQrAttendanceRecords] = useState<Array<any>>([]);
+
+  const displayedStudents = useMemo(() => {
+    const list = Array.isArray(apiStudents) ? apiStudents : [];
+    const q = studentSearchQuery.trim().toLowerCase();
+    return list.filter((s) => {
+      if (studentFilterDept && studentFilterDept !== '__all__' && s.department !== studentFilterDept) return false;
+      if (studentFilterSection.trim() && !studentMatchesAnySection(s, [studentFilterSection.trim()])) return false;
+      if (studentFilterYear.trim() && s.year !== studentFilterYear.trim()) return false;
+      if (studentDetentionFilter === 'active' && s.is_detained) return false;
+      if (studentDetentionFilter === 'detained' && !s.is_detained) return false;
+      if (q) {
+        const name = (s.full_name || '').toLowerCase();
+        const roll = (s.roll_number || '').toLowerCase();
+        const user = (s.username || '').toLowerCase();
+        if (!name.includes(q) && !roll.includes(q) && !user.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [apiStudents, studentFilterDept, studentFilterSection, studentFilterYear, studentSearchQuery, studentDetentionFilter]);
+
+  const detentionActiveList = useMemo(() => {
+    const q = detentionTabSearch.trim().toLowerCase();
+    return (Array.isArray(apiStudents) ? apiStudents : [])
+      .filter((s) => !s.is_detained)
+      .filter((s) => {
+        if (!q) return true;
+        const name = (s.full_name || '').toLowerCase();
+        const roll = (s.roll_number || '').toLowerCase();
+        const user = (s.username || '').toLowerCase();
+        return name.includes(q) || roll.includes(q) || user.includes(q);
+      });
+  }, [apiStudents, detentionTabSearch]);
+
+  const detentionDetainedList = useMemo(() => {
+    const q = detentionTabSearch.trim().toLowerCase();
+    return (Array.isArray(apiStudents) ? apiStudents : [])
+      .filter((s) => !!s.is_detained)
+      .filter((s) => {
+        if (!q) return true;
+        const name = (s.full_name || '').toLowerCase();
+        const roll = (s.roll_number || '').toLowerCase();
+        const user = (s.username || '').toLowerCase();
+        return name.includes(q) || roll.includes(q) || user.includes(q);
+      });
+  }, [apiStudents, detentionTabSearch]);
+
+  const [addStudentForm, setAddStudentForm] = useState({
+    full_name: '',
+    roll_number: '',
+    email: '',
+    password: '',
+    department: '',
+    sections: [] as string[],
+    year: '1',
+    phone: ''
+  });
+
+  // Branches (Departments) from API
+  const [apiDepartments, setApiDepartments] = useState<Array<{ id: number; name: string; code: string }>>([]);
+  const [departmentsLoading, setDepartmentsLoading] = useState(false);
+  const [branchEditOpen, setBranchEditOpen] = useState(false);
+  const [branchDeleteOpen, setBranchDeleteOpen] = useState(false);
+  const [branchForm, setBranchForm] = useState({ name: '', code: '' });
+  const [branchEditId, setBranchEditId] = useState<number | null>(null);
+  const [branchDeleteId, setBranchDeleteId] = useState<number | null>(null);
+
+  // Subjects from API
+  const [apiSubjects, setApiSubjects] = useState<Array<{ id: number; name: string; code: string; departments: number[]; department_codes: string[]; department_code: string; year: string; semester: string }>>([]);
+  const [subjectsLoading, setSubjectsLoading] = useState(false);
+  const [subjectEditOpen, setSubjectEditOpen] = useState(false);
+  const [subjectDeleteOpen, setSubjectDeleteOpen] = useState(false);
+  const [subjectForm, setSubjectForm] = useState({ name: '', code: '', departments: [] as string[], year: '1', semester: '1' });
+  const [subjectEditId, setSubjectEditId] = useState<number | null>(null);
+  const [subjectDeleteId, setSubjectDeleteId] = useState<number | null>(null);
+  const [subjectFilterDept, setSubjectFilterDept] = useState<string>('__all__');
+  const [subjectFilterYear, setSubjectFilterYear] = useState<string>('__all__');
+  const [subjectFilterSemester, setSubjectFilterSemester] = useState<string>('__all__');
+  const SUBJECT_YEARS = ['1', '2', '3', '4'];
+  const SUBJECT_SEMESTERS = ['1', '2'];
+  const subjectHasDepartment = (subject: { department_codes?: string[]; department_code?: string }, deptCode: string) =>
+    Array.isArray(subject.department_codes)
+      ? subject.department_codes.includes(deptCode)
+      : subject.department_code === deptCode;
+
+  // Sections (admin-managed; name can be character, string, or number)
+  const [apiSections, setApiSections] = useState<Array<{ id: number; name: string }>>([]);
+  const [sectionsLoading, setSectionsLoading] = useState(false);
+  const [addSectionOpen, setAddSectionOpen] = useState(false);
+  const [addSectionName, setAddSectionName] = useState('');
+  const [sectionDeleteOpen, setSectionDeleteOpen] = useState(false);
+  const [sectionDeleteId, setSectionDeleteId] = useState<number | null>(null);
+
+  // Faculty from backend API
+  const [apiFaculty, setApiFaculty] = useState<Array<{
+    id: number;
+    username: string;
+    email: string;
+    role: string;
+    full_name: string | null;
+    phone: string | null;
+    department: string | null;
+    departments?: string[];
+    subjects?: string[];
+    visible_password?: string | null;
+  }>>([]);
+  const [facultyLoading, setFacultyLoading] = useState(false);
+
+  // Mentors from backend API
+  const [apiMentors, setApiMentors] = useState<Array<{
+    id: number;
+    username: string;
+    email: string;
+    role: string;
+    full_name: string | null;
+    phone: string | null;
+    visible_password?: string | null;
+  }>>([]);
+  const [mentorsLoading, setMentorsLoading] = useState(false);
+
+  // Mentor Assignments from backend API
+  const [apiMentorAssignments, setApiMentorAssignments] = useState<Array<{
+    id: number;
+    mentor: number;
+    student: number;
+    mentor_name: string;
+    mentor_email: string;
+    student_name: string;
+    student_email: string;
+    student_roll_number: string | null;
+    student_department: string | null;
+    student_section: string | null;
+    assigned_at: string;
+    notes: string | null;
+  }>>([]);
+  const [mentorAssignmentsLoading, setMentorAssignmentsLoading] = useState(false);
+  const [isAssignmentDialogOpen, setIsAssignmentDialogOpen] = useState(false);
+  const [assignmentFormData, setAssignmentFormData] = useState({
+    mentor_id: '',
+    student_id: '',
+    notes: ''
+  });
+  const [selectedAssignment, setSelectedAssignment] = useState<number | null>(null);
+
+  useEffect(() => {
+    // Initialize - clear any loading errors when tab changes
+    setLoadingError(null);
+    
+    if (activeTab !== 'students' && activeTab !== 'student-detention') return;
+    setStudentsError(null);
+    const fetchStudents = async () => {
+      setStudentsLoading(true);
+      try {
+        const res = await authFetch(apiUrl('/api/users/?role=student'));
+        if (res.ok) {
+          const data = await res.json();
+          setApiStudents(Array.isArray(data) ? data : (data.results ?? []));
+        } else if (res.status === 403) {
+          setApiStudents([]);
+          setStudentsError('Authentication failed. Please login again.');
+        } else {
+          setApiStudents([]);
+          setStudentsError('Could not load students. Please try again.');
+        }
+      } catch {
+        setApiStudents([]);
+        setStudentsError('Network error. Is the backend running at ' + (typeof window !== 'undefined' ? window.location.hostname : '') + ':8000?');
+      } finally {
+        setStudentsLoading(false);
+      }
+    };
+    fetchStudents();
+  }, [activeTab]);
+
+  // Initialize and check authentication on mount
+  useEffect(() => {
+    setInitialLoading(true);
+    const checkAuth = async () => {
+      try {
+        // Simple auth check - try to load something that requires auth
+        const res = await authFetch(apiUrl('/api/attendance-portal-freeze/'));
+        if (res.status === 401 || res.status === 403) {
+          setLoadingError('Authentication required. Please login again.');
+        }
+      } catch (error) {
+        console.error('Auth check failed:', error);
+        setLoadingError('Network error. Please check your connection.');
+      } finally {
+        setInitialLoading(false);
+      }
+    };
+    checkAuth();
+  }, []);
+
+  useEffect(() => {
+    if (
+      activeTab !== 'branches' &&
+      activeTab !== 'subjects' &&
+      activeTab !== 'sections' &&
+      activeTab !== 'students' &&
+      activeTab !== 'student-detention' &&
+      activeTab !== 'faculty' &&
+      activeTab !== 'mark-attendance' &&
+      activeTab !== 'attendance-records' &&
+      activeTab !== 'reports'
+    ) {
+      return;
+    }
+    const fetchDepartments = async () => {
+      setDepartmentsLoading(true);
+      try {
+        const res = await authFetch(apiUrl('/api/departments/'));
+        if (res.ok) {
+          const data = await res.json();
+          setApiDepartments(Array.isArray(data) ? data : []);
+        } else setApiDepartments([]);
+      } catch {
+        setApiDepartments([]);
+      } finally {
+        setDepartmentsLoading(false);
+      }
+    };
+    fetchDepartments();
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (
+      activeTab !== 'sections' &&
+      activeTab !== 'mark-attendance' &&
+      activeTab !== 'students' &&
+      activeTab !== 'student-detention' &&
+      activeTab !== 'attendance-records' &&
+      activeTab !== 'reports'
+    ) {
+      return;
+    }
+    setSectionsLoading(true);
+    authFetch(apiUrl('/api/sections/'))
+      .then(r => r.ok ? r.json() : [])
+      .then((data: unknown) => setApiSections(Array.isArray(data) ? data : []))
+      .catch(() => setApiSections([]))
+      .finally(() => setSectionsLoading(false));
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'faculty' && activeTab !== 'dashboard') return;
+    setFacultyLoading(true);
+    authFetch(apiUrl('/api/users/?role=faculty'))
+      .then(r => r.ok ? r.json() : [])
+      .then((data: unknown) => setApiFaculty(Array.isArray(data) ? data : []))
+      .catch(() => setApiFaculty([]))
+      .finally(() => setFacultyLoading(false));
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'mentors') return;
+    setMentorsLoading(true);
+    authFetch(apiUrl('/api/users/?role=mentor'))
+      .then(r => r.ok ? r.json() : [])
+      .then((data: unknown) => setApiMentors(Array.isArray(data) ? data : []))
+      .catch(() => setApiMentors([]))
+      .finally(() => setMentorsLoading(false));
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'mentor-assignments') return;
+    setMentorAssignmentsLoading(true);
+    authFetch(apiUrl('/api/mentor-assignments/'))
+      .then(r => r.ok ? r.json() : [])
+      .then((data: unknown) => setApiMentorAssignments(Array.isArray(data) ? data : []))
+      .catch(() => setApiMentorAssignments([]))
+      .finally(() => setMentorAssignmentsLoading(false));
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (
+      activeTab !== 'subjects' &&
+      activeTab !== 'faculty' &&
+      activeTab !== 'mark-attendance' &&
+      activeTab !== 'attendance-records' &&
+      activeTab !== 'reports'
+    ) {
+      return;
+    }
+    const fetchSubjects = async () => {
+      setSubjectsLoading(true);
+      try {
+        let url = apiUrl('/api/subjects/');
+        if (activeTab === 'subjects') {
+          const params = new URLSearchParams();
+          if (subjectFilterDept && subjectFilterDept !== '__all__') params.set('department', subjectFilterDept);
+          if (subjectFilterYear && subjectFilterYear !== '__all__') params.set('year', subjectFilterYear);
+          if (subjectFilterSemester && subjectFilterSemester !== '__all__') params.set('semester', subjectFilterSemester);
+          if (params.toString()) url = apiUrl(`/api/subjects/?${params.toString()}`);
+        }
+        const res = await authFetch(url);
+        if (res.ok) {
+          const data = await res.json();
+          setApiSubjects(Array.isArray(data) ? data : []);
+        } else setApiSubjects([]);
+      } catch {
+        setApiSubjects([]);
+      } finally {
+        setSubjectsLoading(false);
+      }
+    };
+    fetchSubjects();
+  }, [activeTab, subjectFilterDept, subjectFilterYear, subjectFilterSemester]);
+
+  const handleOpenEditStudent = (s: typeof apiStudents[0]) => {
+    setStudentEditId(s.id);
+    setStudentEditForm({
+      full_name: s.full_name || '',
+      roll_number: s.roll_number || '',
+      email: s.email || '',
+      phone: s.phone || '',
+      department: s.department || '',
+      sections: parseStudentSections(s),
+      year: s.year || '',
+      new_password: ''
+    });
+    setStudentEditOpen(true);
+  };
+
+  const handleSaveEditStudent = async () => {
+    if (studentEditId == null) return;
+    const { new_password, sections, ...rest } = studentEditForm;
+    const body = { ...rest, sections } as Record<string, unknown>;
+    if (new_password && String(new_password).trim()) body.new_password = String(new_password).trim();
+    try {
+      const res = await authFetch(apiUrl(`/api/users/${studentEditId}/`), {
+        method: 'PATCH',
+        body: JSON.stringify(body)
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setApiStudents(prev => prev.map((s: { id: number }) => s.id === studentEditId ? { ...s, ...updated } : s));
+        setStudentEditOpen(false);
+        toast({ title: 'Student updated', description: 'Details saved successfully.' });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast({ title: 'Update failed', description: typeof err.detail === 'string' ? err.detail : 'Please try again.', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Update failed', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleSaveAddStudent = async () => {
+    if (!addStudentForm.roll_number?.trim() || !addStudentForm.email?.trim()) {
+      toast({ title: 'Required', description: 'Roll number and email are required.', variant: 'destructive' });
+      return;
+    }
+    if (!addStudentForm.password?.trim()) {
+      toast({ title: 'Required', description: 'Password is required.', variant: 'destructive' });
+      return;
+    }
+    try {
+      const res = await authFetch(apiUrl('/api/register/'), {
+        method: 'POST',
+        body: JSON.stringify({
+          username: addStudentForm.roll_number.trim(),
+          role: 'student',
+          full_name: addStudentForm.full_name.trim() || addStudentForm.roll_number.trim(),
+          roll_number: addStudentForm.roll_number.trim(),
+          email: addStudentForm.email.trim(),
+          password: addStudentForm.password.trim(),
+          phone: addStudentForm.phone.trim() || '',
+          department: addStudentForm.department || '',
+          sections: addStudentForm.sections || [],
+          year: addStudentForm.year || '1'
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setApiStudents(prev => [...prev, { id: data.id, username: data.username, email: data.email, role: 'student', full_name: data.full_name, roll_number: data.roll_number, phone: data.phone ?? null, department: data.department ?? null, section: data.section ?? null, sections: Array.isArray(data.sections) ? data.sections : undefined, year: data.year ?? null, visible_password: addStudentForm.password, is_detained: data.is_detained ?? false }]);
+        setAddStudentOpen(false);
+        setAddStudentForm({ full_name: '', roll_number: '', email: '', password: '', department: '', sections: [], year: '1', phone: '' });
+        toast({ title: 'Student added', description: 'New student can log in with email and password.' });
+      } else {
+        const msg = data.email?.[0] || data.roll_number?.[0] || data.username?.[0] || data.detail || 'Could not add student.';
+        toast({ title: 'Add failed', description: String(msg), variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Add failed', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleDeleteStudentClick = (id: number) => {
+    setStudentDeleteId(id);
+    setStudentDeleteOpen(true);
+  };
+
+  const confirmDeleteStudent = async () => {
+    if (studentDeleteId == null) return;
+    try {
+      const res = await authFetch(apiUrl(`/api/users/${studentDeleteId}/`), { method: 'DELETE' });
+      if (res.ok) {
+        setApiStudents(prev => prev.filter(s => s.id !== studentDeleteId));
+        setStudentDeleteOpen(false);
+        setStudentDeleteId(null);
+        toast({ title: 'Student deleted', description: 'Student has been removed.' });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast({ title: 'Delete failed', description: typeof err.detail === 'string' ? err.detail : 'Cannot delete.', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Delete failed', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const openDeleteAllStudentsDialog = () => {
+    if (displayedStudents.length === 0) {
+      toast({ title: 'No students', description: 'No students match the current filters or search.', variant: 'destructive' });
+      return;
+    }
+    setDeleteAllStudentsOpen(true);
+  };
+
+  const confirmDeleteAllDisplayedStudents = async () => {
+    const ids = displayedStudents.map((s) => s.id);
+    if (ids.length === 0) {
+      setDeleteAllStudentsOpen(false);
+      return;
+    }
+    setDeleteAllStudentsLoading(true);
+    let ok = 0;
+    let fail = 0;
+    for (const id of ids) {
+      try {
+        const res = await authFetch(apiUrl(`/api/users/${id}/`), { method: 'DELETE' });
+        if (res.ok) ok += 1;
+        else fail += 1;
+      } catch {
+        fail += 1;
+      }
+    }
+    const idSet = new Set(ids);
+    setApiStudents((prev) => prev.filter((s) => !idSet.has(s.id)));
+    setDeleteAllStudentsLoading(false);
+    setDeleteAllStudentsOpen(false);
+    toast({
+      title: 'Bulk delete finished',
+      description: fail ? `Removed ${ok} student(s). ${fail} could not be deleted.` : `Removed ${ok} student(s).`,
+      variant: fail ? 'destructive' : 'default',
+    });
+  };
+
+  const handleSetStudentDetained = async (id: number, detained: boolean) => {
+    try {
+      const res = await authFetch(apiUrl(`/api/users/${id}/`), {
+        method: 'PATCH',
+        body: JSON.stringify({ is_detained: detained }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setApiStudents((prev) => prev.map((s) => (s.id === id ? { ...s, ...updated } : s)));
+        toast({
+          title: detained ? 'Student detained' : 'Student active',
+          description: detained
+            ? 'They are removed from attendance marking until you release them.'
+            : 'They appear again in faculty and admin attendance lists.',
+        });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast({ title: 'Update failed', description: typeof err.detail === 'string' ? err.detail : 'Could not update status.', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Update failed', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleAddBranch = () => {
+    setBranchEditId(null);
+    setBranchForm({ name: '', code: '' });
+    setBranchEditOpen(true);
+  };
+  const handleEditBranch = (d: { id: number; name: string; code: string }) => {
+    setBranchEditId(d.id);
+    setBranchForm({ name: d.name, code: d.code });
+    setBranchEditOpen(true);
+  };
+  const handleSaveBranch = async () => {
+    if (!branchForm.name.trim() || !branchForm.code.trim()) {
+      toast({ title: 'Validation', description: 'Name and code are required.', variant: 'destructive' });
+      return;
+    }
+    try {
+      if (branchEditId != null) {
+        const res = await authFetch(apiUrl(`/api/departments/${branchEditId}/`), {
+          method: 'PATCH',
+          body: JSON.stringify(branchForm)
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setApiDepartments(prev => prev.map(d => d.id === branchEditId ? { ...d, ...updated } : d));
+          setBranchEditOpen(false);
+          toast({ title: 'Branch updated', description: 'Saved.' });
+        } else {
+          const e = await res.json().catch(() => ({}));
+          toast({ title: 'Update failed', description: JSON.stringify(e), variant: 'destructive' });
+        }
+      } else {
+        const res = await authFetch(apiUrl('/api/departments/'), {
+          method: 'POST',
+          body: JSON.stringify(branchForm)
+        });
+        if (res.ok) {
+          const created = await res.json();
+          setApiDepartments(prev => [...prev, created]);
+          setBranchEditOpen(false);
+          toast({ title: 'Branch added', description: 'New branch created.' });
+        } else {
+          const e = await res.json().catch(() => ({}));
+          toast({ title: 'Add failed', description: JSON.stringify(e), variant: 'destructive' });
+        }
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+  const handleDeleteBranchClick = (id: number) => {
+    setBranchDeleteId(id);
+    setBranchDeleteOpen(true);
+  };
+  const confirmDeleteBranch = async () => {
+    if (branchDeleteId == null) return;
+    try {
+      const res = await authFetch(apiUrl(`/api/departments/${branchDeleteId}/`), { method: 'DELETE' });
+      if (res.ok) {
+        setApiDepartments(prev => prev.filter(d => d.id !== branchDeleteId));
+        setBranchDeleteOpen(false);
+        setBranchDeleteId(null);
+        toast({ title: 'Branch deleted', description: 'Removed.' });
+      } else {
+        const e = await res.json().catch(() => ({}));
+        toast({ title: 'Delete failed', description: typeof e.detail === 'string' ? e.detail : 'Cannot delete (may have subjects).', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Delete failed', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleAddSubject = () => {
+    setSubjectEditId(null);
+    setSubjectForm({
+      name: '',
+      code: '',
+      departments: (subjectFilterDept && subjectFilterDept !== '__all__') ? [subjectFilterDept] : (apiDepartments[0]?.code ? [apiDepartments[0].code] : []),
+      year: (subjectFilterYear && subjectFilterYear !== '__all__') ? subjectFilterYear : '1',
+      semester: (subjectFilterSemester && subjectFilterSemester !== '__all__') ? subjectFilterSemester : '1'
+    });
+    setSubjectEditOpen(true);
+  };
+  const handleEditSubject = (s: typeof apiSubjects[0]) => {
+    setSubjectEditId(s.id);
+    setSubjectForm({ name: s.name, code: s.code, departments: s.department_codes ?? (s.department_code ? [s.department_code] : []), year: s.year ?? '1', semester: s.semester ?? '1' });
+    setSubjectEditOpen(true);
+  };
+  const handleSaveSubject = async () => {
+    if (!subjectForm.name.trim() || !subjectForm.code.trim() || subjectForm.departments.length === 0) {
+      toast({ title: 'Validation', description: 'Name, code and at least one branch are required.', variant: 'destructive' });
+      return;
+    }
+    if (!subjectForm.year || subjectForm.year === '__all__') {
+      toast({ title: 'Validation', description: 'Please select a year.', variant: 'destructive' });
+      return;
+    }
+    if (!subjectForm.semester || subjectForm.semester === '__all__') {
+      toast({ title: 'Validation', description: 'Please select a semester.', variant: 'destructive' });
+      return;
+    }
+    const deptIds = subjectForm.departments
+      .map((code) => apiDepartments.find((d) => d.code === code)?.id ?? null)
+      .filter((id): id is number => id != null);
+    if (deptIds.length !== subjectForm.departments.length) {
+      toast({ title: 'Validation', description: 'Select valid branches.', variant: 'destructive' });
+      return;
+    }
+    try {
+      const payload = { name: subjectForm.name.trim(), code: subjectForm.code.trim(), departments: deptIds, year: subjectForm.year, semester: subjectForm.semester };
+      if (subjectEditId != null) {
+        const res = await authFetch(apiUrl(`/api/subjects/${subjectEditId}/`), {
+          method: 'PATCH',
+          body: JSON.stringify(payload)
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setApiSubjects(prev => prev.map(s => s.id === subjectEditId ? { ...s, ...updated } : s));
+          setSubjectEditOpen(false);
+          toast({ title: 'Subject updated', description: 'Saved.' });
+        } else {
+          const e = await res.json().catch(() => ({}));
+          toast({ title: 'Update failed', description: JSON.stringify(e), variant: 'destructive' });
+        }
+      } else {
+        const res = await authFetch(apiUrl('/api/subjects/'), {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+        if (res.ok) {
+          const created = await res.json();
+          setApiSubjects(prev => [...prev, created]);
+          setSubjectEditOpen(false);
+          toast({ title: 'Subject added', description: 'New subject created.' });
+        } else {
+          const e = await res.json().catch(() => ({}));
+          toast({ title: 'Add failed', description: JSON.stringify(e), variant: 'destructive' });
+        }
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+  const handleDeleteSubjectClick = (id: number) => {
+    setSubjectDeleteId(id);
+    setSubjectDeleteOpen(true);
+  };
+  const confirmDeleteSubject = async () => {
+    if (subjectDeleteId == null) return;
+    try {
+      const res = await authFetch(apiUrl(`/api/subjects/${subjectDeleteId}/`), { method: 'DELETE' });
+      if (res.ok) {
+        setApiSubjects(prev => prev.filter(s => s.id !== subjectDeleteId));
+        setSubjectDeleteOpen(false);
+        setSubjectDeleteId(null);
+        toast({ title: 'Subject deleted', description: 'Removed.' });
+      } else {
+        const e = await res.json().catch(() => ({}));
+        toast({ title: 'Delete failed', description: typeof e.detail === 'string' ? e.detail : 'Cannot delete.', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Delete failed', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleAddSection = () => {
+    setAddSectionName('');
+    setAddSectionOpen(true);
+  };
+  const handleSaveSection = async () => {
+    const name = addSectionName.trim();
+    if (!name) {
+      toast({ title: 'Required', description: 'Enter a section name (e.g. A, 1, Alpha).', variant: 'destructive' });
+      return;
+    }
+    try {
+      const res = await authFetch(apiUrl('/api/sections/'), {
+        method: 'POST',
+        body: JSON.stringify({ name })
+      });
+      let data: Record<string, unknown> = {};
+      try {
+        data = await res.json();
+      } catch {
+        data = {};
+      }
+      if (res.ok) {
+        setApiSections(prev => [...prev, { id: (data as { id?: number }).id!, name: (data as { name?: string }).name! }]);
+        setAddSectionOpen(false);
+        setAddSectionName('');
+        toast({ title: 'Section added', description: `"${(data as { name?: string }).name}" has been added.` });
+      } else {
+        const msg = Array.isArray(data.name) ? data.name[0] : typeof data.detail === 'string' ? data.detail : typeof data.detail === 'object' && data.detail != null ? JSON.stringify(data.detail) : res.status === 500 ? 'Server error. Run backend migrations: python manage.py migrate' : 'Could not add section.';
+        toast({ title: 'Failed', description: String(msg), variant: 'destructive' });
+      }
+    } catch (e) {
+      toast({ title: 'Failed', description: (e instanceof Error ? e.message : 'Network error.') + ' Is the backend running?', variant: 'destructive' });
+    }
+  };
+  const confirmDeleteSection = async () => {
+    if (sectionDeleteId == null) return;
+    try {
+      const res = await authFetch(apiUrl(`/api/sections/${sectionDeleteId}/`), { method: 'DELETE' });
+      if (res.ok) {
+        setApiSections(prev => prev.filter(s => s.id !== sectionDeleteId));
+        setSectionDeleteOpen(false);
+        setSectionDeleteId(null);
+        toast({ title: 'Section deleted', description: 'Removed.' });
+      } else {
+        const e = await res.json().catch(() => ({}));
+        toast({ title: 'Delete failed', description: typeof e.detail === 'string' ? e.detail : 'Could not delete.', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Delete failed', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const [systemAttendance, setSystemAttendance] = useState<{ total_classes: number; present_count: number; attendance_percentage: number } | null>(null);
+  const [backendStudentCount, setBackendStudentCount] = useState<number | null>(null);
+  const [backendDefaulters, setBackendDefaulters] = useState<Array<{
+    id: number;
+    full_name: string | null;
+    roll_number: string | null;
+    username?: string;
+    department: string | null;
+    year?: string | null;
+    section?: string | null;
+    sections?: string[];
+    attendancePercentage: number;
+    presentClasses: number;
+    totalClasses: number;
+  }>>([]);
+  const [attendancePortalFreeze, setAttendancePortalFreeze] = useState<{
+    freeze_faculty_portal: boolean;
+    freeze_student_portal: boolean;
+  }>({
+    freeze_faculty_portal: false,
+    freeze_student_portal: false,
+  });
+  const [attendancePortalFreezeLoading, setAttendancePortalFreezeLoading] = useState(false);
+  const [dashboardWeeklyTrend, setDashboardWeeklyTrend] = useState<Array<{ name: string; attendance: number }>>([]);
+  const [dashboardDistributionPie, setDashboardDistributionPie] = useState<Array<{ name: string; value: number; color: string }>>([]);
+
+  useEffect(() => {
+    if (activeTab !== 'dashboard') return;
+    authFetch(apiUrl('/api/attendance/'))
+      .then(res => res.ok ? res.json() : null)
+      .then((data: { total_classes?: number; present_count?: number; attendance_percentage?: number } | null) =>
+        data && typeof data.total_classes === 'number'
+          ? setSystemAttendance({ total_classes: data.total_classes, present_count: data.present_count ?? 0, attendance_percentage: data.attendance_percentage ?? 0 })
+          : setSystemAttendance(null)
+      )
+      .catch(() => setSystemAttendance(null));
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'dashboard') return;
+    authFetch(apiUrl('/api/attendance-portal-freeze/'))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!d) return;
+        setAttendancePortalFreeze({
+          freeze_faculty_portal: !!d.freeze_faculty_portal,
+          freeze_student_portal: !!d.freeze_student_portal,
+        });
+      })
+      .catch(() => {});
+  }, [activeTab]);
+
+  const updateAttendancePortalFreeze = async (patch: Partial<{ freeze_faculty_portal: boolean; freeze_student_portal: boolean }>) => {
+    setAttendancePortalFreezeLoading(true);
+    try {
+      const res = await authFetch(apiUrl('/api/attendance-portal-freeze/'), {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = (data && (data.detail || data.error)) || 'Could not update freeze settings.';
+        toast({ title: 'Update failed', description: String(msg), variant: 'destructive' });
+        return;
+      }
+      setAttendancePortalFreeze({
+        freeze_faculty_portal: !!data.freeze_faculty_portal,
+        freeze_student_portal: !!data.freeze_student_portal,
+      });
+      toast({ title: 'Updated', description: 'Attendance portal freeze settings saved.' });
+    } catch {
+      toast({ title: 'Update failed', description: 'Network error.', variant: 'destructive' });
+    } finally {
+      setAttendancePortalFreezeLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab !== 'dashboard' && activeTab !== 'defaulters') return;
+    Promise.all([
+      authFetch(apiUrl('/api/users/?role=student')).then(r => r.ok ? r.json() : []),
+      authFetch(apiUrl('/api/attendance/')).then(r => r.ok ? r.json() : { records: [] })
+    ]).then(([studentsList, attData]: [Array<{ id: number; full_name?: string | null; roll_number?: string | null; username?: string; department?: string | null; year?: string | null; section?: string | null; sections?: string[] }>, { records?: Array<{ student: number; status: string; date?: string; hours?: number | null; total_hours?: number | null }> }]) => {
+      const list = Array.isArray(studentsList) ? studentsList : [];
+      setBackendStudentCount(list.length);
+      const records = Array.isArray(attData?.records) ? attData.records : [];
+      const byStudent: Record<number, { present: number; total: number }> = {};
+      records.forEach((r: { student: number; status: string; hours?: number | null; total_hours?: number | null }) => {
+        const id = r.student;
+        if (!byStudent[id]) byStudent[id] = { present: 0, total: 0 };
+        const th = r.total_hours != null && Number(r.total_hours) > 0 ? Number(r.total_hours) : 1;
+        const ah = r.hours != null ? Number(r.hours) : (String(r.status).toLowerCase() === 'present' ? th : 0);
+        byStudent[id].total += th;
+        byStudent[id].present += Math.max(0, Math.min(th, ah));
+      });
+      const defaultersList = computeAdminDefaultersList(list, records);
+      setBackendDefaulters(defaultersList);
+
+      // Weekly trend: average attendance % by day of week (Mon–Sun)
+      const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      const byDate: Record<string, { present: number; total: number }> = {};
+      records.forEach((r: { student: number; status: string; date?: string }) => {
+        const d = r.date ?? '';
+        if (!d) return;
+        if (!byDate[d]) byDate[d] = { present: 0, total: 0 };
+        byDate[d].total++;
+        if (String(r.status).toLowerCase() === 'present') byDate[d].present++;
+      });
+      const byDayOfWeek: Record<number, number[]> = { 0: [], 1: [], 2: [], 3: [], 4: [], 5: [], 6: [] };
+      Object.entries(byDate).forEach(([dateStr, { present, total }]) => {
+        if (total === 0) return;
+        const pct = (present / total) * 100;
+        try {
+          const d = new Date(dateStr);
+          const day = d.getDay();
+          byDayOfWeek[day].push(pct);
+        } catch {
+          // skip invalid date
+        }
+      });
+      const weeklyTrend = dayNames.map((name, i) => {
+        const dayIndex = i === 6 ? 0 : i + 1;
+        const arr = byDayOfWeek[dayIndex] || [];
+        const avg = arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+        return { name, attendance: Math.round(avg * 10) / 10 };
+      });
+      setDashboardWeeklyTrend(weeklyTrend);
+
+      // Distribution: bucket students by attendance %
+      const studentsWithPct = list.map((s: { id: number }) => {
+        const stat = byStudent[s.id] || { present: 0, total: 0 };
+        return stat.total > 0 ? (stat.present / stat.total) * 100 : 0;
+      });
+      const buckets = [
+        { label: '90–100%', min: 90, max: 101, color: 'hsl(142, 76%, 36%)' },
+        { label: '75–90%', min: 75, max: 90, color: 'hsl(142, 56%, 51%)' },
+        { label: '50–75%', min: 50, max: 75, color: 'hsl(38, 92%, 50%)' },
+        { label: 'Below 50%', min: 0, max: 50, color: 'hsl(0, 84%, 60%)' }
+      ];
+      const counts = buckets.map(b => studentsWithPct.filter(p => p >= b.min && p < b.max).length);
+      const totalStudents = list.length;
+      const distributionPie = buckets.map((b, i) => ({
+        name: b.label,
+        value: totalStudents > 0 ? Math.round((counts[i] / totalStudents) * 100) : 0,
+        color: b.color
+      })).filter(d => d.value > 0);
+      setDashboardDistributionPie(distributionPie);
+    }).catch(() => {
+      setBackendStudentCount(null);
+      setBackendDefaulters([]);
+      setDashboardWeeklyTrend([]);
+      setDashboardDistributionPie([]);
+    });
+  }, [activeTab]);
+
+  const totalStudentsDisplay = backendStudentCount ?? 0;
+  const defaultersCountDisplay = backendDefaulters.length;
+  const defaulterYearOptions = useMemo(() => {
+    const out = new Set<string>();
+    backendDefaulters.forEach((s) => {
+      const y = (s.year || '').trim();
+      if (y) out.add(y);
+    });
+    return Array.from(out).sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+  }, [backendDefaulters]);
+  const defaulterBranchOptions = useMemo(() => {
+    const out = new Set<string>();
+    backendDefaulters.forEach((s) => {
+      const b = (s.department || '').trim();
+      if (b) out.add(b);
+    });
+    return Array.from(out).sort((a, b) => a.localeCompare(b));
+  }, [backendDefaulters]);
+  const defaulterSectionOptions = useMemo(() => {
+    const out = new Set<string>();
+    backendDefaulters.forEach((s) => {
+      parseStudentSections(s).forEach((sec) => {
+        const v = (sec || '').trim();
+        if (v) out.add(v);
+      });
+    });
+    return Array.from(out).sort((a, b) => a.localeCompare(b));
+  }, [backendDefaulters]);
+  const defaultersToShow = useMemo(() => {
+    const minRaw = Number(defaulterMinPct);
+    const maxRaw = Number(defaulterMaxPct);
+    const minPct = Number.isFinite(minRaw) ? Math.max(0, Math.min(100, minRaw)) : 0;
+    const maxPct = Number.isFinite(maxRaw) ? Math.max(0, Math.min(100, maxRaw)) : 85;
+    const [low, high] = minPct <= maxPct ? [minPct, maxPct] : [maxPct, minPct];
+    const selectedYears = new Set(defaulterFilterYears);
+    const selectedBranches = new Set(defaulterFilterBranches.map((v) => v.toLowerCase()));
+    const selectedSections = defaulterFilterSections;
+    const q = defaultersSearchQuery.trim().toLowerCase();
+    return backendDefaulters.filter((s) => {
+      if (selectedYears.size > 0 && !selectedYears.has((s.year || '').trim())) return false;
+      if (selectedBranches.size > 0 && !selectedBranches.has((s.department || '').trim().toLowerCase())) return false;
+      if (selectedSections.length > 0 && !studentMatchesAnySection(s, selectedSections)) return false;
+      if (s.attendancePercentage < low || s.attendancePercentage > high) return false;
+      if (!q) return true;
+      const name = (s.full_name || '').toLowerCase();
+      const roll = (s.roll_number || '').toLowerCase();
+      const user = (s.username || '').toLowerCase();
+      return name.includes(q) || roll.includes(q) || user.includes(q);
+    });
+  }, [
+    backendDefaulters,
+    defaultersSearchQuery,
+    defaulterFilterYears,
+    defaulterFilterBranches,
+    defaulterFilterSections,
+    defaulterMinPct,
+    defaulterMaxPct,
+  ]);
+
+  const attendanceData = dashboardWeeklyTrend;
+  const pieData = dashboardDistributionPie;
+
+  // Mark Attendance (admin - same as faculty)
+  const [attDepts, setAttDepts] = useState<string[]>(['__all__']);
+  const [attDate, setAttDate] = useState<Date>(new Date());
+  const [attYear, setAttYear] = useState<string>('__all__');
+  const [attSemester, setAttSemester] = useState<string>('__all__');
+  const [attSubjects, setAttSubjects] = useState<string[]>([]);
+  const [attSections, setAttSections] = useState<string[]>([]);
+  const [attData, setAttData] = useState<Record<string, number>>({});
+  const [attStudents, setAttStudents] = useState<Array<{ id: number; full_name: string | null; roll_number: string | null; email: string; department: string | null; section: string | null; sections?: string[]; year: string | null; is_detained?: boolean }>>([]);
+  const [attRecords, setAttRecords] = useState<Array<{ student: number; subject: string; date: string; status: string; hours?: number | null; total_hours?: number | null }>>([]);
+  const [attSessionTotalHours, setAttSessionTotalHours] = useState<number>(1);
+  const [attStudentsLoading, setAttStudentsLoading] = useState(false);
+  const [isUploadingAttendance, setIsUploadingAttendance] = useState(false);
+
+  const [attAllStudentsForReport, setAttAllStudentsForReport] = useState<Array<{ id: number; full_name: string | null; roll_number: string | null; username?: string; section: string | null; sections?: string[]; department?: string | null; year?: string | null }>>([]);
+  const [attReportFromDate, setAttReportFromDate] = useState<Date | null>(null);
+  const [attReportToDate, setAttReportToDate] = useState<Date | null>(null);
+  const [attRecordFilterYears, setAttRecordFilterYears] = useState<string[]>([]);
+  const [attRecordFilterBranches, setAttRecordFilterBranches] = useState<string[]>([]);
+  const [attRecordFilterSections, setAttRecordFilterSections] = useState<string[]>([]);
+  const [attRecordFilterSubjects, setAttRecordFilterSubjects] = useState<string[]>([]);
+  const [attRecordsSearchQuery, setAttRecordsSearchQuery] = useState('');
+
+  useEffect(() => {
+    if (activeTab !== 'mark-attendance' && activeTab !== 'attendance-records' && activeTab !== 'reports') return;
+    const params = new URLSearchParams();
+    if (attReportFromDate) params.set('from_date', format(attReportFromDate, 'yyyy-MM-dd'));
+    if (attReportToDate) params.set('to_date', format(attReportToDate, 'yyyy-MM-dd'));
+    const attUrl = params.toString() ? apiUrl(`/api/attendance/?${params.toString()}`) : apiUrl('/api/attendance/');
+    Promise.all([
+      authFetch(attUrl).then(r => r.ok ? r.json() : { records: [] }),
+      authFetch(apiUrl('/api/users/?role=student')).then(r => r.ok ? r.json() : [])
+    ]).then(([attRes, studentsList]) => {
+      setAttRecords(Array.isArray((attRes as { records?: unknown[] }).records) ? (attRes as { records: Array<{ student: number; subject: string; date: string; status: string }> }).records : []);
+      setAttAllStudentsForReport(Array.isArray(studentsList) ? studentsList : []);
+    }).catch(() => {
+      setAttRecords([]);
+      setAttAllStudentsForReport([]);
+    });
+  }, [activeTab, attReportFromDate, attReportToDate]);
+
+  const selectedAttDeptCodes = attDepts.includes('__all__')
+    ? (apiDepartments || []).map((d: { code: string }) => d.code)
+    : attDepts;
+
+  useEffect(() => {
+    if (activeTab !== 'mark-attendance') return;
+    if (selectedAttDeptCodes.length === 0) {
+      setAttStudents([]);
+      return;
+    }
+    setAttStudentsLoading(true);
+    const params = new URLSearchParams({ role: 'student' });
+    if (selectedAttDeptCodes.length === 1) params.set('department', selectedAttDeptCodes[0]);
+    if (attYear && attYear !== '__all__') params.set('year', attYear);
+    authFetch(apiUrl(`/api/users/?${params}`))
+      .then(res => res.ok ? res.json() : [])
+      .then((data: unknown) => setAttStudents(Array.isArray(data) ? data : []))
+      .catch(() => setAttStudents([]))
+      .finally(() => setAttStudentsLoading(false));
+  }, [activeTab, selectedAttDeptCodes.join(','), attYear]);
+
+  const attSubjectsFiltered = (apiSubjects || []).filter(
+    (s: { department_codes?: string[]; department_code?: string }) =>
+      selectedAttDeptCodes.length === 0 || selectedAttDeptCodes.some((code) => subjectHasDepartment(s, code)),
+  );
+  const attSubjectsSem = attSemester && attSemester !== '__all__'
+    ? attSubjectsFiltered.filter((s: { semester?: string }) => String(s.semester ?? '1') === attSemester)
+    : attSubjectsFiltered;
+  const attStudentsInSection = attStudents
+    .filter(s => !s.is_detained)
+    .filter(s => attSections.length === 0 || studentMatchesAnySection(s, attSections))
+    .filter(s => selectedAttDeptCodes.length === 0 || selectedAttDeptCodes.includes(s.department ?? ''))
+    .map(s => ({ id: String(s.id), name: s.full_name || s.roll_number || '', rollNumber: s.roll_number || '', email: s.email, section: s.section || '' }));
+  const selectedAttSubjectObjs = attSubjectsSem.filter((s: { id: number }) => attSubjects.includes(String(s.id)));
+  const attSubjectCodes = selectedAttSubjectObjs.map((s: { code?: string }) => (s.code ?? '').trim().toLowerCase()).filter(Boolean);
+  const attSubjectNames = selectedAttSubjectObjs.map((s: { name?: string }) => (s.name ?? '').trim().toLowerCase()).filter(Boolean);
+
+  useEffect(() => {
+    if (attSubjects.length !== 1 || attSections.length === 0) {
+      setAttData({});
+      return;
+    }
+    const dateStr = format(attDate, 'yyyy-MM-dd');
+    const subjectMatches = (s: string) => {
+      const t = (s || '').trim().toLowerCase();
+      return attSubjectCodes.includes(t) || attSubjectNames.includes(t);
+    };
+    const initial: Record<string, number> = {};
+    let sessionTotal = attSessionTotalHours;
+    attStudentsInSection.forEach(student => {
+      const record = attRecords.find(
+        r => (r.date === dateStr || (r.date && r.date.slice(0, 10) === dateStr)) && subjectMatches(r.subject ?? '') && Number(r.student) === Number(student.id)
+      );
+      if (record) {
+        const th = record.total_hours != null && record.total_hours > 0 ? Number(record.total_hours) : 1;
+        if (sessionTotal === attSessionTotalHours) sessionTotal = th;
+        const h = record.hours != null ? Number(record.hours) : (record.status?.toLowerCase() === 'present' ? th : 0);
+        initial[student.id] = Math.min(h, th);
+      } else {
+        initial[student.id] = 0;
+      }
+    });
+    setAttData(initial);
+    if (sessionTotal !== attSessionTotalHours && sessionTotal >= 1) setAttSessionTotalHours(sessionTotal);
+  }, [attDate, attSubjects.join(','), attSections.join(','), attSubjectCodes.join(','), attSubjectNames.join(','), attRecords, attStudentsInSection.map(s => s.id).join(',')]);
+
+  const handleAttChange = (studentId: string, isPresent: boolean) => {
+    setAttData(prev => ({ ...prev, [studentId]: isPresent ? attSessionTotalHours : 0 }));
+  };
+  const handleAttHoursChange = (studentId: string, hours: number) => {
+    const val = Math.max(0, Math.min(attSessionTotalHours, hours));
+    setAttData(prev => ({ ...prev, [studentId]: val }));
+  };
+  const handleAttSelectAll = (isPresent: boolean) => {
+    const next: Record<string, number> = {};
+    const val = isPresent ? attSessionTotalHours : 0;
+    attStudentsInSection.forEach(s => { next[s.id] = val; });
+    setAttData(next);
+  };
+  const handleAttSave = async () => {
+    if (attSubjects.length === 0 || attSections.length === 0) {
+      toast({ title: 'Error', description: 'Select at least one subject and one section', variant: 'destructive' });
+      return;
+    }
+    const codesToSend = attSubjectsSem
+      .filter((s: { id: number; code: string }) => attSubjects.includes(String(s.id)))
+      .map((s: { code: string }) => s.code)
+      .filter(Boolean);
+    if (codesToSend.length === 0) {
+      toast({ title: 'Error', description: 'Invalid subject selection', variant: 'destructive' });
+      return;
+    }
+    if (attStudentsInSection.length === 0) {
+      toast({ title: 'No students', description: 'No students in this section.', variant: 'destructive' });
+      return;
+    }
+    const dateStr = format(attDate, 'yyyy-MM-dd');
+    const payload = codesToSend.flatMap((codeToSend: string) =>
+      attStudentsInSection.map(s => {
+        const hours = attData[s.id] ?? 0;
+        return {
+          student: Number(s.id),
+          subject: codeToSend,
+          date: dateStr,
+          status: hours > 0 ? 'present' : 'absent',
+          hours,
+          total_hours: attSessionTotalHours
+        };
+      })
+    );
+    try {
+      const res = await authFetch(apiUrl('/api/attendance/'), {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast({ title: 'Failed to save', description: typeof data.detail === 'string' ? data.detail : 'Please try again.', variant: 'destructive' });
+        return;
+      }
+      authFetch(apiUrl('/api/attendance/'))
+        .then(r => r.ok ? r.json() : { records: [] })
+        .then((d: { records?: Array<{ student: number; subject: string; date: string; status: string }> }) => setAttRecords(d?.records ?? []))
+        .catch(() => {});
+      const savedCount = typeof data.created === 'number' ? data.created : payload.length;
+      toast({ title: 'Success', description: `Attendance saved for ${savedCount} students.` });
+      setAttData({});
+    } catch {
+      toast({ title: 'Failed to save', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleBulkAttendanceUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setIsUploadingAttendance(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await authFetch(apiUrl('/api/attendance/bulk-upload/'), { method: 'POST', body: formData });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast({ title: 'Upload failed', description: typeof data.detail === 'string' ? data.detail : 'Invalid file.', variant: 'destructive' });
+        return;
+      }
+      const created = typeof data.created === 'number' ? data.created : 0;
+      const updated = typeof data.updated === 'number' ? data.updated : 0;
+      const skipped = (typeof data.skipped_existing === 'number' ? data.skipped_existing : 0) + (typeof data.skipped_invalid === 'number' ? data.skipped_invalid : 0);
+      const parts = [`Created ${created}`];
+      if (updated > 0) parts.push(`updated ${updated}`);
+      parts.push(`skipped ${skipped} rows`);
+      toast({
+        title: created > 0 || updated > 0 ? 'Bulk upload completed' : 'No records created',
+        description: `${parts.join(', ')}.`,
+      });
+      setAttRecords(prev => prev.length ? prev : []); // refresh will happen when tab is re-opened
+      authFetch(apiUrl('/api/attendance/'))
+        .then(r => r.ok ? r.json() : { records: [] })
+        .then((d: { records?: Array<{ student: number; subject: string; date: string; status: string }> }) => setAttRecords(d?.records ?? []))
+        .catch(() => {});
+    } catch {
+      toast({ title: 'Upload failed', description: 'Network error.', variant: 'destructive' });
+    } finally {
+      setIsUploadingAttendance(false);
+      event.target.value = '';
+    }
+  };
+
+  const attStudentIdToInfo = useMemo(() => (
+    Object.fromEntries(
+      (attAllStudentsForReport.length ? attAllStudentsForReport : apiStudents.length ? apiStudents : attStudents).map((s: { id: number; full_name?: string | null; roll_number?: string | null; username?: string; section?: string | null; sections?: string[]; department?: string | null; year?: string | null }) => [
+        s.id,
+        {
+          name: s.full_name || s.roll_number || s.username || '',
+          roll: (s.roll_number || s.username || '').trim(),
+          section: formatStudentSectionsDisplay(s).replace(/^–$/, ''),
+          sectionRaw: s.section ?? '',
+          sectionsRaw: parseStudentSections(s),
+          department: (s.department || '').trim(),
+          year: (s.year || '').trim(),
+        },
+      ])
+    )
+  ), [attAllStudentsForReport, apiStudents, attStudents]);
+
+  const attRecordYearOptions = useMemo(() => {
+    const set = new Set<string>();
+    Object.values(attStudentIdToInfo).forEach((s) => {
+      if (s.year) set.add(s.year);
+    });
+    return Array.from(set).sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+  }, [attStudentIdToInfo]);
+
+  const attRecordBranchOptions = useMemo(() => {
+    const fromStudents = new Set<string>();
+    Object.values(attStudentIdToInfo).forEach((s) => {
+      if (s.department) fromStudents.add(s.department);
+    });
+    const merged = new Set<string>([
+      ...Array.from(fromStudents),
+      ...(apiDepartments || []).map((d: { code: string }) => d.code).filter(Boolean),
+    ]);
+    return Array.from(merged).sort((a, b) => a.localeCompare(b));
+  }, [attStudentIdToInfo, apiDepartments]);
+
+  const attRecordSectionOptions = useMemo(() => {
+    const merged = new Set<string>((apiSections || []).map((s: { name: string }) => s.name).filter(Boolean));
+    Object.values(attStudentIdToInfo).forEach((s) => {
+      (s.sectionsRaw || []).forEach((v: string) => {
+        if (v) merged.add(v);
+      });
+      if (s.sectionRaw) merged.add(s.sectionRaw);
+    });
+    return Array.from(merged).sort((a, b) => a.localeCompare(b));
+  }, [attStudentIdToInfo, apiSections]);
+
+  const attRecordSubjectOptions = useMemo(() => {
+    const selectedYears = new Set(attRecordFilterYears);
+    const selectedBranches = new Set(attRecordFilterBranches.map((v) => v.toLowerCase()));
+    const fromSubjects = new Set<string>();
+
+    (apiSubjects || []).forEach((subject) => {
+      const subjectYear = String(subject.year ?? '1').trim();
+      const subjectCode = (subject.code || '').trim();
+      if (!subjectCode) return;
+      if (selectedYears.size > 0 && !selectedYears.has(subjectYear)) return;
+      if (
+        selectedBranches.size > 0 &&
+        !((subject.department_codes ?? (subject.department_code ? [subject.department_code] : [])).some((code) =>
+          selectedBranches.has(String(code).toLowerCase()),
+        ))
+      ) {
+        return;
+      }
+      fromSubjects.add(subjectCode);
+    });
+
+    return Array.from(fromSubjects).sort((a, b) => a.localeCompare(b));
+  }, [apiSubjects, attRecordFilterYears, attRecordFilterBranches]);
+
+  useEffect(() => {
+    const allowed = new Set(attRecordSubjectOptions);
+    setAttRecordFilterSubjects((prev) => prev.filter((subject) => allowed.has(subject)));
+  }, [attRecordSubjectOptions]);
+
+  const filteredAttRecords = useMemo(() => {
+    const selectedYears = new Set(attRecordFilterYears);
+    const selectedBranches = new Set(attRecordFilterBranches.map((v) => v.toLowerCase()));
+    const selectedSections = attRecordFilterSections;
+    const selectedSubjects = new Set(attRecordFilterSubjects.map((v) => v.toLowerCase()));
+
+    return attRecords.filter((r) => {
+      const info = attStudentIdToInfo[r.student];
+      if (!info) return false;
+      if (selectedYears.size > 0 && !selectedYears.has(info.year || '')) return false;
+      if (selectedBranches.size > 0 && !selectedBranches.has((info.department || '').toLowerCase())) return false;
+      if (selectedSections.length > 0 && !studentMatchesAnySection({ section: info.sectionRaw || null, sections: info.sectionsRaw }, selectedSections)) return false;
+      if (selectedSubjects.size > 0 && !selectedSubjects.has((r.subject || '').trim().toLowerCase())) return false;
+      return true;
+    });
+  }, [attRecords, attStudentIdToInfo, attRecordFilterYears, attRecordFilterBranches, attRecordFilterSections, attRecordFilterSubjects]);
+
+  const attendanceRecordsMetrics = useMemo(() => {
+    let attendedClasses = 0;
+    let totalClasses = 0;
+    const byDate: Record<string, { attended: number; total: number }> = {};
+    filteredAttRecords.forEach((r) => {
+      const th = r.total_hours != null && Number(r.total_hours) > 0 ? Number(r.total_hours) : 1;
+      const ah = r.hours != null ? Number(r.hours) : (String(r.status).toLowerCase() === 'present' ? th : 0);
+      const dateKey = String(r.date || '').slice(0, 10);
+      attendedClasses += Math.max(0, Math.min(th, ah));
+      totalClasses += th;
+      if (dateKey) {
+        if (!byDate[dateKey]) byDate[dateKey] = { attended: 0, total: 0 };
+        byDate[dateKey].attended += Math.max(0, Math.min(th, ah));
+        byDate[dateKey].total += th;
+      }
+    });
+    const totalDays = Object.keys(byDate).length;
+    const attendedDays = Object.values(byDate).filter((d) => d.attended > 0 && d.total > 0).length;
+    return {
+      attendedClasses: Math.round(attendedClasses * 100) / 100,
+      totalClasses: Math.round(totalClasses * 100) / 100,
+      attendedDays,
+      totalDays,
+    };
+  }, [filteredAttRecords]);
+
+  const attRecordsForTable = useMemo(() => {
+    const q = attRecordsSearchQuery.trim().toLowerCase();
+    if (!q) return filteredAttRecords;
+    return filteredAttRecords.filter((r) => {
+      const info = attStudentIdToInfo[r.student];
+      if (!info) return false;
+      const name = (info.name || '').toLowerCase();
+      const roll = (info.roll || '').toLowerCase();
+      return name.includes(q) || roll.includes(q);
+    });
+  }, [filteredAttRecords, attStudentIdToInfo, attRecordsSearchQuery]);
+
+  const showAllAttendanceRecordFilters = () => {
+    setAttReportFromDate(null);
+    setAttReportToDate(null);
+    setAttRecordFilterYears([]);
+    setAttRecordFilterBranches([]);
+    setAttRecordFilterSections([]);
+    setAttRecordFilterSubjects([]);
+    setAttRecordsSearchQuery('');
+  };
+
+  const downloadCsv = (filename: string, rows: string[][]) => {
+    const header = rows[0];
+    const body = rows.slice(1);
+    const csv = [header.join(','), ...body.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+  const handleDownloadSubjectWise = () => {
+    const agg = aggregateAttendanceHoursByStudentSubject(filteredAttRecords);
+    const rows: string[][] = [[...ATTENDANCE_REPORT_CSV_HEADERS]];
+    const enriched = agg
+      .map((a) => {
+        const info = attStudentIdToInfo[a.studentId];
+        if (!info) return null;
+        return { ...a, info };
+      })
+      .filter((x): x is NonNullable<typeof x> => x != null);
+    enriched.sort(
+      (a, b) =>
+        a.subject.localeCompare(b.subject) ||
+        (a.info.roll || '').localeCompare(b.info.roll || '') ||
+        (a.info.name || '').localeCompare(b.info.name || ''),
+    );
+    enriched.forEach((a) => {
+      rows.push([
+        a.info.roll ?? '',
+        a.info.name ?? '',
+        a.info.department ?? '',
+        a.info.year ?? '',
+        a.info.section ?? '',
+        a.subject,
+        String(a.attended),
+        String(a.total),
+      ]);
+    });
+    if (rows.length <= 1) {
+      toast({ title: 'No data', description: 'No attendance records match your filters.', variant: 'destructive' });
+      return;
+    }
+    downloadCsv(`attendance_subject_wise_${format(new Date(), 'yyyy-MM-dd')}.csv`, rows);
+    toast({ title: 'Downloaded', description: 'Subject-wise report downloaded.' });
+  };
+  const handleDownloadSectionWise = () => {
+    const agg = aggregateAttendanceHoursByStudentSubject(filteredAttRecords);
+    const rows: string[][] = [[...ATTENDANCE_REPORT_CSV_HEADERS]];
+    const enriched = agg
+      .map((a) => {
+        const info = attStudentIdToInfo[a.studentId];
+        if (!info) return null;
+        return { ...a, info };
+      })
+      .filter((x): x is NonNullable<typeof x> => x != null);
+    enriched.sort(
+      (a, b) =>
+        (a.info.section || '').localeCompare(b.info.section || '') ||
+        a.subject.localeCompare(b.subject) ||
+        (a.info.roll || '').localeCompare(b.info.roll || ''),
+    );
+    enriched.forEach((a) => {
+      rows.push([
+        a.info.roll ?? '',
+        a.info.name ?? '',
+        a.info.department ?? '',
+        a.info.year ?? '',
+        a.info.section ?? '',
+        a.subject,
+        String(a.attended),
+        String(a.total),
+      ]);
+    });
+    if (rows.length <= 1) {
+      toast({ title: 'No data', description: 'No attendance records match your filters.', variant: 'destructive' });
+      return;
+    }
+    downloadCsv(`attendance_section_wise_${format(new Date(), 'yyyy-MM-dd')}.csv`, rows);
+    toast({ title: 'Downloaded', description: 'Section-wise report downloaded.' });
+  };
+
+  const handleDownloadDefaultersReport = async () => {
+    try {
+      const [studentsRes, attRes] = await Promise.all([
+        authFetch(apiUrl('/api/users/?role=student')),
+        authFetch(apiUrl('/api/attendance/')),
+      ]);
+      const studentsList = studentsRes.ok ? await studentsRes.json() : [];
+      const attData = attRes.ok ? await attRes.json() : { records: [] };
+      const list = Array.isArray(studentsList) ? studentsList : [];
+      const records = Array.isArray(attData?.records) ? attData.records : [];
+      const defaultersList = computeAdminDefaultersList(list, records);
+      if (defaultersList.length === 0) {
+        toast({ title: 'No data', description: 'No defaulters found.', variant: 'destructive' });
+        return;
+      }
+      const rows: string[][] = [
+        ['Roll Number', 'Name', 'Year', 'Branch', 'Section', 'Attendance %', 'Present Classes', 'Total Classes', 'Status'],
+      ];
+      defaultersList.forEach((student) => {
+        rows.push([
+          student.roll_number ?? '',
+          student.full_name ?? '',
+          student.year?.trim() ? student.year : '',
+          student.department ?? '',
+          formatStudentSectionsDisplay(student).replace(/^–$/, '') || '',
+          String(student.attendancePercentage),
+          String(student.presentClasses),
+          String(student.totalClasses),
+          'Warning Sent',
+        ]);
+      });
+      downloadCsv(`defaulters_${format(new Date(), 'yyyy-MM-dd')}.csv`, rows);
+      toast({ title: 'Downloaded', description: 'Defaulters list downloaded.' });
+    } catch {
+      toast({ title: 'Download failed', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleDownloadDefaultersFromTab = () => {
+    if (defaultersToShow.length === 0) {
+      toast({
+        title: 'No data',
+        description: backendDefaulters.length === 0 ? 'No defaulters found.' : 'No students match your search.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    const rows: string[][] = [
+      ['Roll Number', 'Name', 'Year', 'Branch', 'Section', 'Attendance %', 'Present Classes', 'Total Classes', 'Status'],
+    ];
+    defaultersToShow.forEach((student) => {
+      rows.push([
+        student.roll_number ?? '',
+        student.full_name ?? '',
+        student.year?.trim() ? student.year : '',
+        student.department ?? '',
+        formatStudentSectionsDisplay(student).replace(/^–$/, '') || '',
+        String(student.attendancePercentage),
+        String(student.presentClasses),
+        String(student.totalClasses),
+        'Warning Sent',
+      ]);
+    });
+    downloadCsv(`defaulters_${format(new Date(), 'yyyy-MM-dd')}.csv`, rows);
+    toast({ title: 'Downloaded', description: 'Defaulters list downloaded.' });
+  };
+
+  // Admin Profile
+  const adminId = user?.id && /^\d+$/.test(String(user.id)) ? Number(user.id) : null;
+  const [apiProfile, setApiProfile] = useState<{ full_name?: string | null; phone?: string | null; username?: string | null; email?: string | null } | null>(null);
+  const [profileEditOpen, setProfileEditOpen] = useState(false);
+  const [profileEditForm, setProfileEditForm] = useState({ full_name: '', phone: '', username: '', email: '' });
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [changePasswordForm, setChangePasswordForm] = useState({ current_password: '', new_password: '', confirm_password: '' });
+
+  useEffect(() => {
+    if (adminId == null || activeTab !== 'profile') return;
+    authFetch(apiUrl(`/api/users/${adminId}/`))
+      .then(res => res.ok ? res.json() : null)
+      .then(setApiProfile)
+      .catch(() => setApiProfile(null));
+  }, [adminId, activeTab]);
+
+  useEffect(() => {
+    if (apiProfile) {
+      setProfileEditForm({
+        full_name: apiProfile.full_name || '',
+        phone: apiProfile.phone || '',
+        username: apiProfile.username || '',
+        email: apiProfile.email || user?.email || '',
+      });
+    }
+  }, [apiProfile, user?.email]);
+
+  const handleSaveProfile = async () => {
+    if (adminId == null) return;
+    try {
+      const res = await authFetch(apiUrl(`/api/users/${adminId}/`), {
+        method: 'PATCH',
+        body: JSON.stringify({
+          full_name: profileEditForm.full_name,
+          phone: profileEditForm.phone,
+          username: profileEditForm.username || undefined,
+          email: profileEditForm.email.trim() || undefined,
+        })
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setApiProfile(prev => prev ? { ...prev, ...updated } : null);
+        updateSessionUser({
+          email: typeof updated.email === 'string' ? updated.email : profileEditForm.email.trim(),
+          name: typeof updated.full_name === 'string' ? updated.full_name : profileEditForm.full_name,
+        });
+        setProfileEditOpen(false);
+        toast({ title: 'Profile updated', description: 'Your details have been saved.' });
+      } else {
+        toast({ title: 'Update failed', description: 'Please try again.', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Update failed', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleAdminChangePassword = async () => {
+    if (adminId == null) return;
+    if (changePasswordForm.new_password !== changePasswordForm.confirm_password) {
+      toast({ title: 'Passwords do not match', variant: 'destructive' });
+      return;
+    }
+    if (!changePasswordForm.new_password.trim()) {
+      toast({ title: 'Enter a new password', variant: 'destructive' });
+      return;
+    }
+    try {
+      const res = await authFetch(apiUrl(`/api/users/${adminId}/`), {
+        method: 'PATCH',
+        body: JSON.stringify({ current_password: changePasswordForm.current_password, new_password: changePasswordForm.new_password })
+      });
+      if (res.ok) {
+        setChangePasswordOpen(false);
+        setChangePasswordForm({ current_password: '', new_password: '', confirm_password: '' });
+        toast({ title: 'Password changed', description: 'Your password has been updated.' });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast({ title: 'Password change failed', description: String(err.current_password?.[0] || err.detail || 'Failed'), variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Password change failed', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  // Faculty Management Handlers
+  const handleAddFaculty = () => {
+    setSelectedFaculty(null);
+    setFacultyFormData({
+      name: '',
+      email: '',
+      password: '',
+      departmentIds: [],
+      phone: '',
+      subjects: [],
+      departmentSections: []
+    });
+    setIsFacultyDialogOpen(true);
+  };
+
+  const handleEditFaculty = (facultyId: string) => {
+    const member = apiFaculty.find(f => String(f.id) === facultyId);
+    if (member) {
+      const depts = Array.isArray(member.departments) && member.departments.length > 0
+        ? member.departments
+        : (member.department ?? '').split(',').map((d: string) => d.trim()).filter(Boolean);
+      const subjectIds = Array.isArray(member.subjects) ? member.subjects.map(String) : [];
+      
+      // Load existing department-section assignments
+      const facultyDeptSections = Array.isArray(member.faculty_department_sections) 
+        ? member.faculty_department_sections 
+        : [];
+      
+      const departmentSections = depts.map((deptCode: string) => {
+        const sectionsForDept = facultyDeptSections
+          .filter((fds: { department_code: string; section_name: string }) => fds.department_code === deptCode)
+          .map((fds: { department_code: string; section_name: string }) => fds.section_name);
+        return {
+          departmentCode: deptCode,
+          sectionNames: sectionsForDept
+        };
+      });
+      
+      setSelectedFaculty(facultyId);
+      setFacultyFormData({
+        name: member.full_name ?? member.username,
+        email: member.email,
+        password: '',
+        departmentIds: depts,
+        phone: member.phone ?? '',
+        subjects: subjectIds,
+        departmentSections
+      });
+      setIsFacultyDialogOpen(true);
+    }
+  };
+
+  const handleDeleteFaculty = (facultyId: string) => {
+    setSelectedFaculty(facultyId);
+    setIsDeleteDialogOpen(true);
+  };
+
+  const confirmDeleteFaculty = async () => {
+    if (!selectedFaculty) return;
+    try {
+      const res = await authFetch(apiUrl(`/api/users/${selectedFaculty}/`), { method: 'DELETE' });
+      if (res.ok) {
+        setApiFaculty(prev => prev.filter(f => String(f.id) !== selectedFaculty));
+        setIsDeleteDialogOpen(false);
+        setSelectedFaculty(null);
+        toast({ title: 'Faculty Deleted', description: 'Faculty member has been removed.' });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast({ title: 'Delete Failed', description: typeof err.detail === 'string' ? err.detail : 'Could not delete.', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Delete Failed', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleSaveFaculty = async () => {
+    try {
+      const deptIds = Array.isArray(facultyFormData.departmentIds) ? facultyFormData.departmentIds : [];
+      if (!facultyFormData.name || !facultyFormData.email || deptIds.length === 0) {
+        toast({
+          title: 'Validation Error',
+          description: 'Please fill in all required fields and select at least one department.',
+          variant: 'destructive'
+        });
+        return;
+      }
+
+      if (!selectedFaculty && !facultyFormData.password) {
+        toast({
+          title: 'Validation Error',
+          description: 'Password is required for new faculty.',
+          variant: 'destructive'
+        });
+        return;
+      }
+
+      // Build faculty department-section assignments
+      const facultyDepartmentSections: Array<{ department_code: string; section_name: string }> = [];
+      facultyFormData.departmentSections.forEach(({ departmentCode, sectionNames }) => {
+        if (deptIds.includes(departmentCode)) {
+          sectionNames.forEach(sectionName => {
+            if (sectionName.trim()) {
+              facultyDepartmentSections.push({
+                department_code: departmentCode,
+                section_name: sectionName.trim()
+              });
+            }
+          });
+        }
+      });
+
+      if (selectedFaculty) {
+        const res = await authFetch(apiUrl(`/api/users/${selectedFaculty}/`), {
+          method: 'PATCH',
+          body: JSON.stringify({
+            full_name: facultyFormData.name,
+            email: facultyFormData.email,
+            ...(facultyFormData.password ? { new_password: facultyFormData.password } : {}),
+            phone: facultyFormData.phone || '',
+            departments: deptIds,
+            subjects: facultyFormData.subjects || [],
+            faculty_department_sections: facultyDepartmentSections
+          })
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setApiFaculty(prev => prev.map(f => f.id === Number(selectedFaculty) ? { ...f, ...updated } : f));
+          toast({ title: 'Faculty Updated', description: 'Faculty member has been updated.' });
+        } else {
+          const err = await res.json().catch(() => ({}));
+          toast({ title: 'Update Failed', description: typeof err.detail === 'string' ? err.detail : 'Please try again.', variant: 'destructive' });
+          return;
+        }
+      } else {
+        const res = await authFetch(apiUrl('/api/register/'), {
+          method: 'POST',
+          body: JSON.stringify({
+            username: facultyFormData.email,
+            email: facultyFormData.email,
+            password: facultyFormData.password,
+            role: 'faculty',
+            full_name: facultyFormData.name,
+            phone: facultyFormData.phone || '',
+            departments: deptIds,
+            subjects: facultyFormData.subjects || [],
+            faculty_department_sections: facultyDepartmentSections,
+            roll_number: '',
+            section: '',
+            year: ''
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const msg = data.email?.[0] || data.username?.[0] || data.detail || (typeof data === 'object' ? JSON.stringify(data) : 'Registration failed');
+          toast({ title: 'Could not add faculty', description: String(msg), variant: 'destructive' });
+          return;
+        }
+        const savedDept = data.department ?? (deptIds.join(',') || '');
+        const savedDepts = Array.isArray(data.departments) ? data.departments : (savedDept ? savedDept.split(',').map((d: string) => d.trim()).filter(Boolean) : []);
+        const savedSubjects = Array.isArray(data.subjects) ? data.subjects : [];
+        setApiFaculty(prev => [...prev, { id: data.id, username: data.username ?? data.email, email: data.email, role: 'faculty', full_name: data.full_name ?? facultyFormData.name, phone: data.phone ?? null, department: savedDept, departments: savedDepts, subjects: savedSubjects }]);
+        toast({ title: 'Faculty Added', description: 'New faculty member can now log in with their email and password.' });
+      }
+
+      setIsFacultyDialogOpen(false);
+      setSelectedFaculty(null);
+      setFacultyFormData({
+        name: '',
+        email: '',
+        password: '',
+        departmentIds: [],
+        phone: '',
+        subjects: [],
+        departmentSections: []
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Operation Failed',
+        description: error.message || 'An error occurred.',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  const toggleSubject = (subjectId: string) => {
+    setFacultyFormData(prev => ({
+      ...prev,
+      subjects: prev.subjects.includes(subjectId)
+        ? prev.subjects.filter(id => id !== subjectId)
+        : [...prev.subjects, subjectId]
+    }));
+  };
+
+  // Mentor Management Handlers
+  const handleAddMentor = () => {
+    setSelectedMentor(null);
+    setMentorFormData({
+      name: '',
+      email: '',
+      password: '',
+      phone: ''
+    });
+    setIsMentorDialogOpen(true);
+  };
+
+  const handleEditMentor = (mentorId: string) => {
+    const mentor = apiMentors.find(m => String(m.id) === mentorId);
+    if (mentor) {
+      setSelectedMentor(mentorId);
+      setMentorFormData({
+        name: mentor.full_name ?? mentor.username,
+        email: mentor.email,
+        password: '',
+        phone: mentor.phone ?? ''
+      });
+      setIsMentorDialogOpen(true);
+    }
+  };
+
+  const handleDeleteMentor = (mentorId: string) => {
+    setSelectedMentor(mentorId);
+    setIsMentorDeleteDialogOpen(true);
+  };
+
+  const confirmDeleteMentor = async () => {
+    if (!selectedMentor) return;
+    try {
+      const res = await authFetch(apiUrl(`/api/users/${selectedMentor}/`), { method: 'DELETE' });
+      if (res.ok) {
+        setApiMentors(prev => prev.filter(m => String(m.id) !== selectedMentor));
+        setIsMentorDeleteDialogOpen(false);
+        setSelectedMentor(null);
+        toast({ title: 'Mentor Deleted', description: 'Mentor has been removed.' });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast({ title: 'Delete Failed', description: typeof err.detail === 'string' ? err.detail : 'Could not delete.', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Delete Failed', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleSaveMentor = async () => {
+    try {
+      if (!mentorFormData.name || !mentorFormData.email) {
+        toast({
+          title: 'Validation Error',
+          description: 'Please fill in all required fields.',
+          variant: 'destructive'
+        });
+        return;
+      }
+
+      if (!selectedMentor && !mentorFormData.password) {
+        toast({
+          title: 'Validation Error',
+          description: 'Password is required for new mentors.',
+          variant: 'destructive'
+        });
+        return;
+      }
+
+      if (selectedMentor) {
+        const res = await authFetch(apiUrl(`/api/users/${selectedMentor}/`), {
+          method: 'PATCH',
+          body: JSON.stringify({
+            full_name: mentorFormData.name,
+            email: mentorFormData.email,
+            ...(mentorFormData.password ? { new_password: mentorFormData.password } : {}),
+            phone: mentorFormData.phone || ''
+          })
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setApiMentors(prev => prev.map(m => m.id === Number(selectedMentor) ? { ...m, ...updated } : m));
+          toast({ title: 'Mentor Updated', description: 'Mentor has been updated.' });
+        } else {
+          const err = await res.json().catch(() => ({}));
+          toast({ title: 'Update Failed', description: typeof err.detail === 'string' ? err.detail : 'Please try again.', variant: 'destructive' });
+          return;
+        }
+      } else {
+        const res = await authFetch(apiUrl('/api/register/'), {
+          method: 'POST',
+          body: JSON.stringify({
+            username: mentorFormData.email,
+            email: mentorFormData.email,
+            password: mentorFormData.password,
+            role: 'mentor',
+            full_name: mentorFormData.name,
+            phone: mentorFormData.phone || '',
+            roll_number: '',
+            section: '',
+            year: ''
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const msg = data.email?.[0] || data.username?.[0] || data.detail || (typeof data === 'object' ? JSON.stringify(data) : 'Registration failed');
+          toast({ title: 'Could not add mentor', description: String(msg), variant: 'destructive' });
+          return;
+        }
+        setApiMentors(prev => [...prev, { id: data.id, username: data.username ?? data.email, email: data.email, role: 'mentor', full_name: data.full_name ?? mentorFormData.name, phone: data.phone ?? null }]);
+        toast({ title: 'Mentor Added', description: 'New mentor can now log in with their email and password.' });
+      }
+
+      setIsMentorDialogOpen(false);
+      setSelectedMentor(null);
+      setMentorFormData({
+        name: '',
+        email: '',
+        password: '',
+        phone: ''
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Operation Failed',
+        description: error.message || 'An error occurred.',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  // Mentor Assignment Handlers
+  const handleAddAssignment = () => {
+    setSelectedAssignment(null);
+    setAssignmentFormData({
+      mentor_id: '',
+      student_id: '',
+      notes: ''
+    });
+    setIsAssignmentDialogOpen(true);
+  };
+
+  const handleEditAssignment = (assignmentId: number) => {
+    const assignment = apiMentorAssignments.find(a => a.id === assignmentId);
+    if (assignment) {
+      setSelectedAssignment(assignmentId);
+      setAssignmentFormData({
+        mentor_id: String(assignment.mentor),
+        student_id: String(assignment.student),
+        notes: assignment.notes || ''
+      });
+      setIsAssignmentDialogOpen(true);
+    }
+  };
+
+  const handleDeleteAssignment = async (assignmentId: number) => {
+    try {
+      const res = await authFetch(apiUrl(`/api/mentor-assignments/${assignmentId}/`), { method: 'DELETE' });
+      if (res.ok) {
+        setApiMentorAssignments(prev => prev.filter(a => a.id !== assignmentId));
+        toast({ title: 'Assignment Deleted', description: 'Mentor-student assignment has been removed.' });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast({ title: 'Delete Failed', description: typeof err.detail === 'string' ? err.detail : 'Could not delete.', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Delete Failed', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleSaveAssignment = async () => {
+    try {
+      if (!assignmentFormData.mentor_id || !assignmentFormData.student_id) {
+        toast({
+          title: 'Validation Error',
+          description: 'Please select both mentor and student.',
+          variant: 'destructive'
+        });
+        return;
+      }
+
+      if (selectedAssignment) {
+        const res = await authFetch(apiUrl(`/api/mentor-assignments/${selectedAssignment}/`), {
+          method: 'PATCH',
+          body: JSON.stringify({
+            notes: assignmentFormData.notes
+          })
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setApiMentorAssignments(prev => prev.map(a => a.id === selectedAssignment ? { ...a, ...updated } : a));
+          toast({ title: 'Assignment Updated', description: 'Assignment has been updated.' });
+        } else {
+          const err = await res.json().catch(() => ({}));
+          toast({ title: 'Update Failed', description: typeof err.detail === 'string' ? err.detail : 'Please try again.', variant: 'destructive' });
+          return;
+        }
+      } else {
+        const res = await authFetch(apiUrl('/api/mentor-assignments/'), {
+          method: 'POST',
+          body: JSON.stringify({
+            mentor_id: parseInt(assignmentFormData.mentor_id),
+            student_id: parseInt(assignmentFormData.student_id),
+            notes: assignmentFormData.notes
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const msg = data.detail || (typeof data === 'object' ? JSON.stringify(data) : 'Assignment failed');
+          toast({ title: 'Could not create assignment', description: String(msg), variant: 'destructive' });
+          return;
+        }
+        setApiMentorAssignments(prev => [...prev, data]);
+        toast({ title: 'Assignment Created', description: 'Student has been assigned to mentor.' });
+      }
+
+      setIsAssignmentDialogOpen(false);
+      setSelectedAssignment(null);
+      setAssignmentFormData({
+        mentor_id: '',
+        student_id: '',
+        notes: ''
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Operation Failed',
+        description: error.message || 'An error occurred.',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  // Admin QR Attendance Handlers
+  const handleAdminStartQrSession = async () => {
+    if (!adminQrSessionForm.faculty_id || !adminQrSessionForm.subject) {
+      toast({ title: 'Validation Error', description: 'Please select faculty and subject.', variant: 'destructive' });
+      return;
+    }
+
+    try {
+      // Get faculty user to impersonate
+      const facultyUser = apiFaculty.find(f => String(f.id) === adminQrSessionForm.faculty_id);
+      if (!facultyUser) {
+        toast({ title: 'Error', description: 'Faculty not found.', variant: 'destructive' });
+        return;
+      }
+
+      // Create session on behalf of faculty (requires backend to handle this)
+      const payload: any = {
+        faculty_id: adminQrSessionForm.faculty_id,
+        subject: adminQrSessionForm.subject,
+        duration_minutes: adminQrSessionForm.duration_hours * 60
+      };
+      
+      const res = await authFetch(apiUrl('/api/qr-attendance/sessions/'), {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        const session = await res.json();
+        setAdminQrSessionDialogOpen(false);
+        setAdminQrSessionForm({
+          subject: '',
+          duration_hours: 1,
+          faculty_id: ''
+        });
+        handleAdminActivateQrSession(session.id);
+        toast({ title: 'Session Started', description: 'QR attendance session is now active.' });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast({ title: 'Error', description: err.detail || 'Failed to start session.', variant: 'destructive' });
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleAdminActivateQrSession = async (sessionId: number) => {
+    try {
+      const res = await authFetch(apiUrl(`/api/qr-attendance/sessions/${sessionId}/`));
+
+      if (res.ok) {
+        const session = await res.json();
+        setAdminActiveQrSession(session);
+        setAdminQrCodeImage(session.qr_code_image);
+        
+        // Start QR refresh interval
+        if (adminQrRefreshInterval) {
+          clearInterval(adminQrRefreshInterval);
+        }
+        
+        const interval = setInterval(async () => {
+          try {
+            const refreshRes = await authFetch(apiUrl(`/api/qr-attendance/sessions/${sessionId}/`));
+            if (refreshRes.ok) {
+              const refreshedSession = await refreshRes.json();
+              if (refreshedSession.qr_code_image) {
+                setAdminQrCodeImage(refreshedSession.qr_code_image);
+              }
+              if (!refreshedSession.is_active || refreshedSession.is_expired) {
+                clearInterval(interval);
+                setAdminActiveQrSession(null);
+                setAdminQrCodeImage(null);
+                loadAdminQrSessions();
+              }
+            }
+          } catch (error) {
+            console.error('Error refreshing QR:', error);
+          }
+        }, 5000); // Refresh every 5 seconds
+        
+        setAdminQrRefreshInterval(interval);
+      } else {
+        toast({ title: 'Error', description: 'Failed to load session.', variant: 'destructive' });
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleAdminCloseQrSession = async () => {
+    if (!adminActiveQrSession) return;
+
+    try {
+      const res = await authFetch(apiUrl(`/api/qr-attendance/sessions/${adminActiveQrSession.id}/`), {
+        method: 'PATCH',
+        body: JSON.stringify({ is_active: false })
+      });
+
+      if (res.ok) {
+        if (adminQrRefreshInterval) {
+          clearInterval(adminQrRefreshInterval);
+          setAdminQrRefreshInterval(null);
+        }
+        setAdminActiveQrSession(null);
+        setAdminQrCodeImage(null);
+        loadAdminQrSessions();
+        toast({ title: 'Session Closed', description: 'Attendance session has been closed.' });
+      } else {
+        toast({ title: 'Error', description: 'Failed to close session.', variant: 'destructive' });
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleAdminDeleteQrSession = async (sessionId: number) => {
+    if (!confirm('Are you sure you want to delete this session? This action cannot be undone.')) {
+      return;
+    }
+
+    try {
+      const res = await authFetch(apiUrl(`/api/qr-attendance/sessions/${sessionId}/`), {
+        method: 'DELETE',
+      });
+
+      if (res.ok) {
+        // Clear active session if it was the deleted one
+        if (adminActiveQrSession && adminActiveQrSession.id === sessionId) {
+          if (adminQrRefreshInterval) {
+            clearInterval(adminQrRefreshInterval);
+            setAdminQrRefreshInterval(null);
+          }
+          setAdminActiveQrSession(null);
+          setAdminQrCodeImage(null);
+        }
+        loadAdminQrSessions();
+        toast({ title: 'Session Deleted', description: 'QR attendance session has been deleted.' });
+      } else {
+        toast({ title: 'Error', description: 'Failed to delete session.', variant: 'destructive' });
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleAdminViewQrRecords = async () => {
+    if (!adminActiveQrSession) return;
+
+    try {
+      const res = await authFetch(apiUrl(`/api/qr-attendance/sessions/${adminActiveQrSession.id}/records/`));
+
+      if (res.ok) {
+        const records = await res.json();
+        setAdminQrAttendanceRecords(records);
+      } else {
+        toast({ title: 'Error', description: 'Failed to load records.', variant: 'destructive' });
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const loadAdminQrSessions = async () => {
+    try {
+      const res = await authFetch(apiUrl('/api/qr-attendance/sessions/'));
+
+      if (res.ok) {
+        const sessions = await res.json();
+        setAdminQrSessions(sessions);
+      }
+    } catch (error) {
+      console.error('Error loading QR sessions:', error);
+    }
+  };
+
+  // Load QR sessions when tab becomes active
+  useEffect(() => {
+    if (activeTab === 'qr-attendance') {
+      loadAdminQrSessions();
+    }
+  }, [activeTab]);
+
+  // Cleanup intervals on unmount
+  useEffect(() => {
+    return () => {
+      if (adminQrRefreshInterval) {
+        clearInterval(adminQrRefreshInterval);
+      }
+    };
+  }, [adminQrRefreshInterval]);
+
+  const handleImportStudentsFromExcel = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setIsImporting(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await authFetch(apiUrl('/api/students/bulk-upload/'), {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const created = typeof data.created === 'number' ? data.created : 0;
+        const skippedExisting = typeof data.skipped_existing === 'number' ? data.skipped_existing : 0;
+        const skippedInvalid = typeof data.skipped_invalid === 'number' ? data.skipped_invalid : 0;
+        toast({
+          title: 'Import completed',
+          description: `Created ${created} students. Skipped ${skippedExisting} existing and ${skippedInvalid} invalid rows.`,
+        });
+        if (created > 0 && (activeTab === 'students' || activeTab === 'reports')) {
+          const r = await authFetch(apiUrl('/api/users/?role=student'));
+          if (r.ok) {
+            const list = await r.json();
+            setApiStudents(Array.isArray(list) ? list : []);
+          }
+        }
+      } else {
+        const message =
+          (data && (data.detail || data.error)) ||
+          'Import failed. Check that the Excel file has columns: full_name, roll_number, email, department, section, year.';
+        toast({
+          title: 'Import failed',
+          description: String(message),
+          variant: 'destructive',
+        });
+      }
+    } catch {
+      toast({
+        title: 'Import failed',
+        description: 'Network error while uploading file.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsImporting(false);
+      event.target.value = '';
+    }
+  };
+
+  const handleImportFacultyFromExcel = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setIsImporting(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await authFetch(apiUrl('/api/faculty/bulk-upload/'), {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const created = typeof data.created === 'number' ? data.created : 0;
+        const skippedExisting = typeof data.skipped_existing === 'number' ? data.skipped_existing : 0;
+        const skippedInvalid = typeof data.skipped_invalid === 'number' ? data.skipped_invalid : 0;
+        toast({
+          title: 'Faculty import completed',
+          description: `Created ${created} faculty. Skipped ${skippedExisting} existing and ${skippedInvalid} invalid rows.`,
+        });
+        if (created > 0 && activeTab === 'faculty') {
+          const r = await authFetch(apiUrl('/api/users/?role=faculty'));
+          if (r.ok) {
+            const list = await r.json();
+            setApiFaculty(Array.isArray(list) ? list : []);
+          }
+        }
+      } else {
+        const message =
+          (data && (data.detail || data.error)) ||
+          'Import failed. Check that the Excel file has columns: full_name, email, department, phone, subjects, password.';
+        toast({
+          title: 'Import failed',
+          description: String(message),
+          variant: 'destructive',
+        });
+      }
+    } catch {
+      toast({
+        title: 'Import failed',
+        description: 'Network error while uploading file.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsImporting(false);
+      event.target.value = '';
+    }
+  };
+
+  const handleImportSubjectsFromExcel = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setIsImporting(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await authFetch(apiUrl('/api/subjects/bulk-upload/'), {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const created = typeof data.created === 'number' ? data.created : 0;
+        const updated = typeof data.updated === 'number' ? data.updated : 0;
+        const skippedInvalid = typeof data.skipped_invalid === 'number' ? data.skipped_invalid : 0;
+        toast({
+          title: 'Subjects import completed',
+          description: `Created ${created}, updated ${updated}, skipped ${skippedInvalid} invalid rows.`,
+        });
+        if ((created > 0 || updated > 0) && activeTab === 'subjects') {
+          const r = await authFetch(apiUrl('/api/subjects/'));
+          if (r.ok) {
+            const list = await r.json();
+            setApiSubjects(Array.isArray(list) ? list : []);
+          }
+        }
+      } else {
+        const message =
+          (data && (data.detail || data.error)) ||
+          'Import failed. Check that the Excel file has columns: code, name, department_codes, year, semester.';
+        toast({
+          title: 'Import failed',
+          description: String(message),
+          variant: 'destructive',
+        });
+      }
+    } catch {
+      toast({
+        title: 'Import failed',
+        description: 'Network error while uploading file.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsImporting(false);
+      event.target.value = '';
+    }
+  };
+
+  const handleExportToExcel = async () => {
+    try {
+      const res = await authFetch(apiUrl('/api/export/attendance-data/'), {
+        method: 'GET',
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const msg = (data && (data.detail || data.error)) || 'Download failed. Make sure you are logged in as Admin.';
+        toast({ title: 'Download failed', description: String(msg), variant: 'destructive' });
+        return;
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'attendance_data.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast({ title: 'Download started', description: 'Excel file is downloading.' });
+    } catch {
+      toast({ title: 'Download failed', description: 'Network error while downloading Excel file.', variant: 'destructive' });
+    }
+  };
+
+  const handleDownloadDateWiseExcel = async () => {
+    setIsDownloadingDateWise(true);
+    try {
+      const params = new URLSearchParams();
+      if (attReportFromDate) params.set('from_date', format(attReportFromDate, 'yyyy-MM-dd'));
+      if (attReportToDate) params.set('to_date', format(attReportToDate, 'yyyy-MM-dd'));
+      attRecordFilterBranches.forEach((b) => params.append('branch', b));
+      attRecordFilterYears.forEach((y) => params.append('year', y));
+      attRecordFilterSections.forEach((s) => params.append('section', s));
+      attRecordFilterSubjects.forEach((s) => params.append('subject', s));
+      const qs = params.toString();
+      const res = await authFetch(
+        apiUrl(qs ? `/api/export/attendance-date-wise/?${qs}` : '/api/export/attendance-date-wise/'),
+        { method: 'GET' },
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const msg =
+          (data && (data.detail || data.error)) || 'Download failed. Make sure you are logged in as Admin.';
+        toast({ title: 'Download failed', description: String(msg), variant: 'destructive' });
+        return;
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `attendance_date_wise_${format(new Date(), 'yyyy-MM-dd')}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast({ title: 'Download started', description: 'Date-wise attendance Excel is downloading.' });
+    } catch {
+      toast({
+        title: 'Download failed',
+        description: 'Network error while downloading Excel file.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsDownloadingDateWise(false);
+    }
+  };
+
+  // Show loading or error state during initial load
+  if (initialLoading) {
+    return (
+      <div className="min-h-screen bg-dashboard-bg flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (loadingError) {
+    return (
+      <div className="min-h-screen bg-dashboard-bg flex items-center justify-center p-4">
+        <div className="text-center max-w-md">
+          <AlertTriangle className="w-12 h-12 text-destructive mx-auto mb-4" />
+          <h2 className="text-xl font-bold mb-2">Error Loading Dashboard</h2>
+          <p className="text-muted-foreground mb-4">{loadingError}</p>
+          <Button onClick={() => window.location.reload()} className="w-full">
+            Retry
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-dashboard-bg">
+      {/* Header */}
+      <header className="sticky top-0 z-50 border-b border-border/60 bg-white/95 backdrop-blur-md shadow-soft">
+        <div className="px-4 sm:px-6 py-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="flex items-center space-x-4">
+            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-violet-500 to-blue-500 flex items-center justify-center shadow-lg shadow-violet-500/25">
+              <GraduationCap className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h1 className="text-xl font-extrabold text-foreground">{user?.name || 'Admin'}</h1>
+              <p className="text-sm text-muted-foreground">Welcome back</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <Button variant="outline" onClick={() => setChangePasswordOpen(true)} className="rounded-xl flex-1 sm:flex-none">
+              <Lock className="w-4 h-4 mr-2" />
+              Change password
+            </Button>
+            <Button variant="outline" onClick={logout} className="rounded-xl flex-1 sm:flex-none">
+              <LogOut className="w-4 h-4 mr-2" />
+              Logout
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      <div className="p-4 sm:p-6">
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList className="mb-6 flex flex-wrap gap-1.5 h-auto p-1.5 rounded-xl bg-muted/80">
+            <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
+            <TabsTrigger value="students">Students</TabsTrigger>
+            <TabsTrigger value="student-detention">Active / Detained</TabsTrigger>
+            <TabsTrigger value="branches">Branches</TabsTrigger>
+            <TabsTrigger value="subjects">Subjects</TabsTrigger>
+            <TabsTrigger value="sections">Sections</TabsTrigger>
+            <TabsTrigger value="faculty">Manage Faculty</TabsTrigger>
+            <TabsTrigger value="mentors">Manage Mentors</TabsTrigger>
+            <TabsTrigger value="mentor-assignments">Mentor Assignments</TabsTrigger>
+            <TabsTrigger value="qr-attendance">QR Attendance</TabsTrigger>
+            <TabsTrigger value="mark-attendance">Mark Attendance</TabsTrigger>
+            <TabsTrigger value="attendance-records">Attendance Records</TabsTrigger>
+            <TabsTrigger value="reports">Data Management</TabsTrigger>
+            <TabsTrigger value="defaulters">Defaulters</TabsTrigger>
+            <TabsTrigger value="profile">Profile</TabsTrigger>
+          </TabsList>
+
+          {/* Dashboard Tab */}
+          <TabsContent value="dashboard" className="space-y-6 mt-6">
+            {/* Stats Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+              <Card className="overflow-hidden transition-all duration-300 hover:shadow-card-hover border-violet-200/50">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Total Students</CardTitle>
+                  <div className="w-10 h-10 rounded-xl bg-violet-100 flex items-center justify-center">
+                    <Users className="h-5 w-5 text-violet-600" />
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">{totalStudentsDisplay}</div>
+                  <p className="text-xs text-muted-foreground">Across all departments</p>
+                </CardContent>
+              </Card>
+
+              <Card className="overflow-hidden transition-all duration-300 hover:shadow-card-hover border-blue-200/50">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Total Faculty</CardTitle>
+                  <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center">
+                    <GraduationCap className="h-5 w-5 text-blue-600" />
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">{facultyLoading ? '…' : apiFaculty.length}</div>
+                  <p className="text-xs text-muted-foreground">Active faculty</p>
+                </CardContent>
+              </Card>
+
+              <Card className="overflow-hidden transition-all duration-300 hover:shadow-card-hover border-cyan-200/50">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Overall Attendance</CardTitle>
+                  <div className="w-10 h-10 rounded-xl bg-cyan-100 flex items-center justify-center">
+                    <TrendingUp className="h-5 w-5 text-cyan-600" />
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">{systemAttendance != null ? `${systemAttendance.attendance_percentage}%` : '—'}</div>
+                  <p className="text-xs text-muted-foreground">
+                    {systemAttendance != null ? `${systemAttendance.present_count} / ${systemAttendance.total_classes} records` : 'No attendance data yet'}
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card className="overflow-hidden transition-all duration-300 hover:shadow-card-hover border-amber-200/50">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Defaulters</CardTitle>
+                  <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center">
+                    <AlertTriangle className="h-5 w-5 text-amber-600" />
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold text-amber-600">{defaultersCountDisplay}</div>
+                  <p className="text-xs text-muted-foreground">Students below 85%</p>
+                </CardContent>
+              </Card>
+            </div>
+
+            <Card className="border border-border/60">
+              <CardHeader>
+                <CardTitle>Attendance Portal Freeze Controls</CardTitle>
+                <CardDescription>
+                  Freeze or unfreeze attendance access for faculty and students. Admin access remains available.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="rounded-lg border p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-medium">Faculty attendance portal</p>
+                      <p className="text-sm text-muted-foreground">Blocks faculty attendance view, save, and bulk upload.</p>
+                    </div>
+                    <Badge variant={attendancePortalFreeze.freeze_faculty_portal ? 'destructive' : 'secondary'}>
+                      {attendancePortalFreeze.freeze_faculty_portal ? 'Frozen' : 'Active'}
+                    </Badge>
+                  </div>
+                  <Button
+                    type="button"
+                    variant={attendancePortalFreeze.freeze_faculty_portal ? 'outline' : 'destructive'}
+                    onClick={() =>
+                      updateAttendancePortalFreeze({
+                        freeze_faculty_portal: !attendancePortalFreeze.freeze_faculty_portal,
+                      })
+                    }
+                    disabled={attendancePortalFreezeLoading}
+                  >
+                    {attendancePortalFreeze.freeze_faculty_portal ? 'Unfreeze Faculty Portal' : 'Freeze Faculty Portal'}
+                  </Button>
+                </div>
+                <div className="rounded-lg border p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-medium">Student attendance portal</p>
+                      <p className="text-sm text-muted-foreground">Blocks student attendance dashboard and records view.</p>
+                    </div>
+                    <Badge variant={attendancePortalFreeze.freeze_student_portal ? 'destructive' : 'secondary'}>
+                      {attendancePortalFreeze.freeze_student_portal ? 'Frozen' : 'Active'}
+                    </Badge>
+                  </div>
+                  <Button
+                    type="button"
+                    variant={attendancePortalFreeze.freeze_student_portal ? 'outline' : 'destructive'}
+                    onClick={() =>
+                      updateAttendancePortalFreeze({
+                        freeze_student_portal: !attendancePortalFreeze.freeze_student_portal,
+                      })
+                    }
+                    disabled={attendancePortalFreezeLoading}
+                  >
+                    {attendancePortalFreeze.freeze_student_portal ? 'Unfreeze Student Portal' : 'Freeze Student Portal'}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Charts - show when backend provides trend/distribution data */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Weekly Attendance Trend</CardTitle>
+                  <CardDescription>Average attendance percentage by day</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {attendanceData.length === 0 ? (
+                    <div className="flex items-center justify-center h-[300px] text-muted-foreground">No trend data yet</div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height={300}>
+                      <BarChart data={attendanceData}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="name" />
+                        <YAxis />
+                        <Tooltip />
+                        <Bar dataKey="attendance" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Attendance Distribution</CardTitle>
+                  <CardDescription>Student categorization by attendance percentage</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {pieData.length === 0 ? (
+                    <div className="flex items-center justify-center h-[300px] text-muted-foreground">No distribution data yet</div>
+                  ) : (
+                    <>
+                      <ResponsiveContainer width="100%" height={300}>
+                        <PieChart>
+                          <Pie
+                            data={pieData}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={60}
+                            outerRadius={120}
+                            paddingAngle={5}
+                            dataKey="value"
+                          >
+                            {pieData.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={entry.color} />
+                            ))}
+                          </Pie>
+                          <Tooltip />
+                        </PieChart>
+                      </ResponsiveContainer>
+                      <div className="mt-4 space-y-2">
+                        {pieData.map((item, index) => (
+                          <div key={index} className="flex items-center justify-between text-sm">
+                            <div className="flex items-center">
+                              <div className="w-3 h-3 rounded-full mr-2" style={{ backgroundColor: item.color }} />
+                              {item.name}
+                            </div>
+                            <span className="font-medium">{item.value}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          {/* Students Tab */}
+          <TabsContent value="students">
+            <Card>
+              <CardHeader className="flex flex-row items-start justify-between gap-4 flex-wrap">
+                <div>
+                  <CardTitle>Student Management</CardTitle>
+                  <CardDescription>Add students (single or bulk import), view and manage by class. Only admin can add students.</CardDescription>
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                  <Button onClick={() => { setAddStudentForm({ full_name: '', roll_number: '', email: '', password: '', department: '', sections: [], year: '1', phone: '' }); setAddStudentOpen(true); }}>
+                    <UserPlus className="w-4 h-4 mr-2" /> Add Student
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() =>
+                      downloadSampleExcel('/api/samples/student-registration/', 'sample_student_registration.xlsx')
+                    }
+                  >
+                    <FileDown className="w-4 h-4 mr-2" />
+                    Sample student Excel
+                  </Button>
+                  <input type="file" accept=".xlsx" className="hidden" id="students-bulk-import" onChange={handleImportStudentsFromExcel} />
+                  <Button variant="outline" asChild disabled={isImporting}>
+                    <label htmlFor="students-bulk-import" className="cursor-pointer flex items-center">
+                      {isImporting ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Importing…</> : <><Upload className="w-4 h-4 mr-2" /> Import from Excel</>}
+                    </label>
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex flex-wrap gap-3 items-center">
+                  <Label className="text-muted-foreground">Filter by class:</Label>
+                  <Select value={studentFilterDept || '__all__'} onValueChange={setStudentFilterDept}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="All departments" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all__">All departments</SelectItem>
+                      {apiDepartments.map(d => (
+                        <SelectItem key={String(d.id)} value={d.code}>{d.code} – {d.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Input
+                    placeholder="Section"
+                    className="w-24"
+                    value={studentFilterSection}
+                    onChange={e => setStudentFilterSection(e.target.value)}
+                  />
+                  <Input
+                    placeholder="Year"
+                    className="w-24"
+                    value={studentFilterYear}
+                    onChange={e => setStudentFilterYear(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-wrap gap-3 items-center">
+                  <Select value={studentDetentionFilter} onValueChange={(v) => setStudentDetentionFilter(v as 'all' | 'active' | 'detained')}>
+                    <SelectTrigger className="w-[168px] rounded-xl">
+                      <SelectValue placeholder="Status" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All statuses</SelectItem>
+                      <SelectItem value="active">Active only</SelectItem>
+                      <SelectItem value="detained">Detained only</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <div className="relative flex-1 min-w-[220px] max-w-md">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                    <Input
+                      className="pl-9 rounded-xl"
+                      placeholder="Search by name or roll number…"
+                      value={studentSearchQuery}
+                      onChange={(e) => setStudentSearchQuery(e.target.value)}
+                      aria-label="Search students by name or roll number"
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    className="rounded-xl"
+                    disabled={studentsLoading || !!studentsError || displayedStudents.length === 0}
+                    onClick={openDeleteAllStudentsDialog}
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Delete all shown ({displayedStudents.length})
+                  </Button>
+                </div>
+                {studentsLoading ? (
+                  <p className="text-muted-foreground">Loading students…</p>
+                ) : studentsError ? (
+                  <p className="text-destructive">{studentsError}</p>
+                ) : displayedStudents.length === 0 ? (
+                  <p className="text-muted-foreground">
+                    {Array.isArray(apiStudents) && apiStudents.length === 0
+                      ? 'No students yet. Add a student or import from Excel.'
+                      : 'No students match the filters or search. Clear search or filters to see more.'}
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left p-2">Roll Number</th>
+                          <th className="text-left p-2">Name</th>
+                          <th className="text-left p-2">Email</th>
+                          <th className="text-left p-2">Department</th>
+                          <th className="text-left p-2">Section</th>
+                          <th className="text-left p-2">Year</th>
+                            <th className="text-left p-2">Status</th>
+                            <th className="text-left p-2">Password</th>
+                            <th className="text-left p-2">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {displayedStudents.map((student) => {
+                            const dept = apiDepartments.find(d => d.code === student.department);
+                            const detained = !!student.is_detained;
+                            return (
+                              <tr key={student.id} className="border-b">
+                                <td className="p-2 font-mono text-sm">{student.roll_number || student.username}</td>
+                                <td className="p-2">{student.full_name || student.username}</td>
+                                <td className="p-2 text-sm text-muted-foreground">{student.email}</td>
+                                <td className="p-2">{dept?.code ?? student.department}</td>
+                                <td className="p-2">
+                                  <div className="flex flex-wrap gap-1">
+                                    {parseStudentSections(student).length === 0 ? (
+                                      <Badge variant="secondary">–</Badge>
+                                    ) : (
+                                      parseStudentSections(student).map((sec) => (
+                                        <Badge key={sec} variant="secondary">{sec}</Badge>
+                                      ))
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="p-2">{student.year || '–'}</td>
+                                <td className="p-2">
+                                  <Badge variant={detained ? 'destructive' : 'default'}>{detained ? 'Detained' : 'Active'}</Badge>
+                                </td>
+                                <td className="p-2 font-mono text-sm">{student.visible_password ?? '—'}</td>
+                                <td className="p-2 flex flex-wrap gap-1">
+                                  <Button variant="outline" size="sm" onClick={() => handleOpenEditStudent(student)}>
+                                    <Edit className="w-3 h-3 mr-1 inline" /> Edit
+                                  </Button>
+                                  {detained ? (
+                                    <Button variant="outline" size="sm" onClick={() => void handleSetStudentDetained(student.id, false)}>
+                                      Release
+                                    </Button>
+                                  ) : (
+                                    <Button variant="outline" size="sm" className="text-destructive border-destructive/50 hover:bg-destructive/10" onClick={() => void handleSetStudentDetained(student.id, true)}>
+                                      Detain
+                                    </Button>
+                                  )}
+                                  <Button variant="outline" size="sm" onClick={() => handleDeleteStudentClick(student.id)} className="text-destructive hover:text-destructive">
+                                    <Trash2 className="w-3 h-3" />
+                                  </Button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            {/* Add Student Dialog */}
+            <Dialog open={addStudentOpen} onOpenChange={setAddStudentOpen}>
+              <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>Add Student</DialogTitle>
+                  <DialogDescription>Create a new student account. They can sign in with email and password.</DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-4 py-4">
+                  <div className="grid gap-2">
+                    <Label>Full name</Label>
+                    <Input value={addStudentForm.full_name ?? ''} onChange={e => setAddStudentForm(f => ({ ...f, full_name: e.target.value }))} placeholder="Full name" />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Roll number *</Label>
+                    <Input value={addStudentForm.roll_number ?? ''} onChange={e => setAddStudentForm(f => ({ ...f, roll_number: e.target.value }))} placeholder="e.g. CSE2021001" required />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Email *</Label>
+                    <Input type="email" value={addStudentForm.email ?? ''} onChange={e => setAddStudentForm(f => ({ ...f, email: e.target.value }))} placeholder="Email" required />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Password *</Label>
+                    <Input type="password" value={addStudentForm.password ?? ''} onChange={e => setAddStudentForm(f => ({ ...f, password: e.target.value }))} placeholder="Login password" required />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Phone</Label>
+                    <Input value={addStudentForm.phone ?? ''} onChange={e => setAddStudentForm(f => ({ ...f, phone: e.target.value }))} placeholder="Phone" />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Department</Label>
+                    <Select value={addStudentForm.department || '__none__'} onValueChange={v => setAddStudentForm(f => ({ ...f, department: v === '__none__' ? '' : v }))}>
+                      <SelectTrigger><SelectValue placeholder="Select department" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">—</SelectItem>
+                        {(apiDepartments || []).map((d: { id: number; code: string; name: string }) => (
+                          <SelectItem key={d.id} value={d.code}>{d.code} – {d.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Section(s)</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal rounded-xl">
+                          {addStudentForm.sections.length > 0 ? `${addStudentForm.sections.length} selected` : 'Select section(s)'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-72 p-3 max-h-64 overflow-y-auto" align="start">
+                        {(apiSections || []).length === 0 ? (
+                          <p className="text-sm text-muted-foreground">Add sections in the Sections tab first.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            <div className="flex justify-end gap-2 mb-2">
+                              <Button type="button" size="sm" variant="outline" className="h-7 px-2" onClick={() => setAddStudentForm(f => ({ ...f, sections: (apiSections || []).map((x: { name: string }) => x.name) }))}>Select all</Button>
+                              <Button type="button" size="sm" variant="outline" className="h-7 px-2" onClick={() => setAddStudentForm(f => ({ ...f, sections: [] }))}>Clear all</Button>
+                            </div>
+                            {(apiSections || []).map((s: { id: number; name: string }) => (
+                              <div key={s.id} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`add-stu-sec-${s.id}`}
+                                  checked={addStudentForm.sections.includes(s.name)}
+                                  onCheckedChange={(checked) => {
+                                    setAddStudentForm(f => ({
+                                      ...f,
+                                      sections: checked ? [...f.sections, s.name] : f.sections.filter((x) => x !== s.name),
+                                    }));
+                                  }}
+                                />
+                                <label htmlFor={`add-stu-sec-${s.id}`} className="text-sm cursor-pointer">{s.name}</label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Year</Label>
+                    <Select value={addStudentForm.year || '1'} onValueChange={v => setAddStudentForm(f => ({ ...f, year: v }))}>
+                      <SelectTrigger><SelectValue placeholder="Year" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="1">Year 1</SelectItem>
+                        <SelectItem value="2">Year 2</SelectItem>
+                        <SelectItem value="3">Year 3</SelectItem>
+                        <SelectItem value="4">Year 4</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setAddStudentOpen(false)}>Cancel</Button>
+                  <Button onClick={handleSaveAddStudent}><Save className="w-4 h-4 mr-2" /> Add Student</Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+            {/* Edit Student Dialog */}
+            <Dialog open={studentEditOpen} onOpenChange={setStudentEditOpen}>
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Edit student details</DialogTitle>
+                  <DialogDescription>Update name, roll number, email, phone, department, section(s), and year.</DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-4 py-4">
+                  <div className="grid gap-2">
+                    <Label>Full name</Label>
+                    <Input
+                      value={studentEditForm.full_name}
+                      onChange={e => setStudentEditForm(f => ({ ...f, full_name: e.target.value }))}
+                      placeholder="Full name"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Roll number</Label>
+                    <Input
+                      value={studentEditForm.roll_number}
+                      onChange={e => setStudentEditForm(f => ({ ...f, roll_number: e.target.value }))}
+                      placeholder="Roll number"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Email</Label>
+                    <Input
+                      type="email"
+                      value={studentEditForm.email}
+                      onChange={e => setStudentEditForm(f => ({ ...f, email: e.target.value }))}
+                      placeholder="Email"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Phone</Label>
+                    <Input
+                      value={studentEditForm.phone}
+                      onChange={e => setStudentEditForm(f => ({ ...f, phone: e.target.value }))}
+                      placeholder="Phone"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Department</Label>
+                    <Select value={studentEditForm.department} onValueChange={v => setStudentEditForm(f => ({ ...f, department: v }))}>
+                      <SelectTrigger><SelectValue placeholder="Department" /></SelectTrigger>
+                      <SelectContent>
+                        {apiDepartments.map((d: { id: string | number; name: string; code: string }) => (
+                          <SelectItem key={String(d.id)} value={d.code}>{d.code} – {d.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Section(s)</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal rounded-xl">
+                          {studentEditForm.sections.length > 0 ? `${studentEditForm.sections.length} selected` : 'Select section(s)'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-72 p-3 max-h-64 overflow-y-auto" align="start">
+                        {(apiSections || []).length === 0 ? (
+                          <p className="text-sm text-muted-foreground">Add sections in the Sections tab first.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            <div className="flex justify-end gap-2 mb-2">
+                              <Button type="button" size="sm" variant="outline" className="h-7 px-2" onClick={() => setStudentEditForm(f => ({ ...f, sections: (apiSections || []).map((x: { name: string }) => x.name) }))}>Select all</Button>
+                              <Button type="button" size="sm" variant="outline" className="h-7 px-2" onClick={() => setStudentEditForm(f => ({ ...f, sections: [] }))}>Clear all</Button>
+                            </div>
+                            {(apiSections || []).map((s: { id: number; name: string }) => (
+                              <div key={s.id} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`edit-stu-sec-${s.id}`}
+                                  checked={studentEditForm.sections.includes(s.name)}
+                                  onCheckedChange={(checked) => {
+                                    setStudentEditForm(f => ({
+                                      ...f,
+                                      sections: checked ? [...f.sections, s.name] : f.sections.filter((x) => x !== s.name),
+                                    }));
+                                  }}
+                                />
+                                <label htmlFor={`edit-stu-sec-${s.id}`} className="text-sm cursor-pointer">{s.name}</label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Year</Label>
+                    <Input
+                      value={studentEditForm.year}
+                      onChange={e => setStudentEditForm(f => ({ ...f, year: e.target.value }))}
+                      placeholder="e.g. 2"
+                    />
+                  </div>
+                  {studentEditId != null && apiStudents.find((s: { id: number; visible_password?: string | null }) => s.id === studentEditId)?.visible_password && (
+                    <div className="grid gap-2">
+                      <Label>Password (visible to admin)</Label>
+                      <p className="text-sm font-mono bg-muted px-3 py-2 rounded border">
+                        {apiStudents.find((s: { id: number; visible_password?: string | null }) => s.id === studentEditId)?.visible_password}
+                      </p>
+                    </div>
+                  )}
+                  <div className="grid gap-2">
+                    <Label>New password (leave blank to keep current)</Label>
+                    <Input
+                      type="password"
+                      value={studentEditForm.new_password}
+                      onChange={e => setStudentEditForm(f => ({ ...f, new_password: e.target.value }))}
+                      placeholder="Set new password"
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setStudentEditOpen(false)}>Cancel</Button>
+                  <Button onClick={handleSaveEditStudent}><Save className="w-4 h-4 mr-2" /> Save</Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+            <AlertDialog open={studentDeleteOpen} onOpenChange={setStudentDeleteOpen}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete student?</AlertDialogTitle>
+                  <AlertDialogDescription>This will permanently remove the student and their attendance records. This cannot be undone.</AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={confirmDeleteStudent} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+            <AlertDialog open={deleteAllStudentsOpen} onOpenChange={(open) => { if (!deleteAllStudentsLoading) setDeleteAllStudentsOpen(open); }}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete all students in this list?</AlertDialogTitle>
+                  <AlertDialogDescription className="space-y-2">
+                    <span className="block">
+                      This will permanently remove <strong>{displayedStudents.length}</strong> student{displayedStudents.length === 1 ? '' : 's'} currently shown (after department, section, year filters and search). Each account and their attendance records will be deleted. This cannot be undone.
+                    </span>
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={deleteAllStudentsLoading}>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    disabled={deleteAllStudentsLoading}
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      await confirmDeleteAllDisplayedStudents();
+                    }}
+                  >
+                    {deleteAllStudentsLoading ? 'Deleting…' : 'Delete all'}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </TabsContent>
+
+          <TabsContent value="student-detention" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Active &amp; detained students</CardTitle>
+                <CardDescription>
+                  Detained students do not appear in faculty or admin Mark Attendance lists and cannot receive new attendance marks. Release a student to restore access to attendance marking.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="relative max-w-md">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                  <Input
+                    className="pl-9 rounded-xl"
+                    placeholder="Search both lists by name or roll number…"
+                    value={detentionTabSearch}
+                    onChange={(e) => setDetentionTabSearch(e.target.value)}
+                  />
+                </div>
+                {studentsLoading ? (
+                  <p className="text-muted-foreground">Loading students…</p>
+                ) : studentsError ? (
+                  <p className="text-destructive">{studentsError}</p>
+                ) : (
+                  <div className="grid gap-6 lg:grid-cols-2">
+                    <Card className="border-violet-200/50 shadow-sm">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-lg">Active ({detentionActiveList.length})</CardTitle>
+                        <CardDescription>Eligible for attendance marking.</CardDescription>
+                      </CardHeader>
+                      <CardContent className="pt-0">
+                        {detentionActiveList.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No active students match the search.</p>
+                        ) : (
+                          <div className="overflow-x-auto max-h-[420px] overflow-y-auto border rounded-lg">
+                            <table className="w-full text-sm">
+                              <thead className="sticky top-0 bg-muted/90">
+                                <tr className="border-b">
+                                  <th className="text-left p-2">Roll</th>
+                                  <th className="text-left p-2">Name</th>
+                                  <th className="text-left p-2">Dept</th>
+                                  <th className="text-right p-2">Action</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {detentionActiveList.map((s) => {
+                                  const dept = apiDepartments.find((d) => d.code === s.department);
+                                  return (
+                                                                        <tr key={s.id} className="border-b">
+                                      <td className="p-2 font-mono">{s.roll_number || s.username}</td>
+                                      <td className="p-2">{s.full_name || s.username}</td>
+                                      <td className="p-2">{dept?.code ?? s.department ?? '–'}</td>
+                                      <td className="p-2 text-right">
+                                        <Button variant="outline" size="sm" className="text-destructive border-destructive/50" onClick={() => void handleSetStudentDetained(s.id, true)}>
+                                          Detain
+                                        </Button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                    <Card className="border-destructive/25 shadow-sm">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-lg">Detained ({detentionDetainedList.length})</CardTitle>
+                        <CardDescription>Not shown in attendance marking until released.</CardDescription>
+                      </CardHeader>
+                      <CardContent className="pt-0">
+                        {detentionDetainedList.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No detained students{detentionTabSearch.trim() ? ' match the search.' : '.'}</p>
+                        ) : (
+                          <div className="overflow-x-auto max-h-[420px] overflow-y-auto border rounded-lg">
+                            <table className="w-full text-sm">
+                              <thead className="sticky top-0 bg-muted/90">
+                                <tr className="border-b">
+                                  <th className="text-left p-2">Roll</th>
+                                  <th className="text-left p-2">Name</th>
+                                  <th className="text-left p-2">Dept</th>
+                                  <th className="text-right p-2">Action</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {detentionDetainedList.map((s) => {
+                                  const dept = apiDepartments.find((d) => d.code === s.department);
+                                  return (
+                                    <tr key={s.id} className="border-b">
+                                      <td className="p-2 font-mono">{s.roll_number || s.username}</td>
+                                      <td className="p-2">{s.full_name || s.username}</td>
+                                      <td className="p-2">{dept?.code ?? s.department ?? '–'}</td>
+                                      <td className="p-2 text-right">
+                                        <Button variant="outline" size="sm" onClick={() => void handleSetStudentDetained(s.id, false)}>
+                                          Release
+                                        </Button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Branches Tab */}
+          <TabsContent value="branches">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div>
+                  <CardTitle>Branches (Departments)</CardTitle>
+                  <CardDescription>Add, edit, or remove branches. Students and subjects use these departments.</CardDescription>
+                </div>
+                <Button onClick={handleAddBranch}><Plus className="w-4 h-4 mr-2" /> Add Branch</Button>
+              </CardHeader>
+              <CardContent>
+                {departmentsLoading ? (
+                  <p className="text-muted-foreground">Loading…</p>
+                ) : apiDepartments.length === 0 ? (
+                  <p className="text-muted-foreground">No branches yet. Add a branch to get started.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left p-3">Code</th>
+                          <th className="text-left p-3">Name</th>
+                          <th className="text-left p-3">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {apiDepartments.map((d) => (
+                          <tr key={d.id} className="border-b">
+                            <td className="p-3 font-mono font-medium">{d.code}</td>
+                            <td className="p-3">{d.name}</td>
+                            <td className="p-3 flex gap-2">
+                              <Button variant="outline" size="sm" onClick={() => handleEditBranch(d)}><Edit className="w-3 h-3 mr-1" /> Edit</Button>
+                              <Button variant="outline" size="sm" onClick={() => handleDeleteBranchClick(d.id)} className="text-destructive hover:text-destructive"><Trash2 className="w-3 h-3" /></Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            <Dialog open={branchEditOpen} onOpenChange={setBranchEditOpen}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>{branchEditId == null ? 'Add Branch' : 'Edit Branch'}</DialogTitle>
+                  <DialogDescription>Department code is used in student and subject records.</DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-4 py-4">
+                  <div className="grid gap-2">
+                    <Label>Code</Label>
+                    <Input value={branchForm.code} onChange={e => setBranchForm(f => ({ ...f, code: e.target.value.toUpperCase() }))} placeholder="e.g. CSE" />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Name</Label>
+                    <Input value={branchForm.name} onChange={e => setBranchForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Computer Science Engineering" />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setBranchEditOpen(false)}>Cancel</Button>
+                  <Button onClick={handleSaveBranch}><Save className="w-4 h-4 mr-2" /> Save</Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+            <AlertDialog open={branchDeleteOpen} onOpenChange={setBranchDeleteOpen}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete branch?</AlertDialogTitle>
+                  <AlertDialogDescription>This will remove the branch. Delete or reassign its subjects first.</AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={confirmDeleteBranch} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </TabsContent>
+
+          {/* Sections Tab */}
+          <TabsContent value="sections">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div>
+                  <CardTitle>Sections</CardTitle>
+                  <CardDescription>Add or remove sections. Section name can be a character (e.g. A), a string (e.g. Alpha), or a number (e.g. 1). Used in Mark Attendance and student assignment.</CardDescription>
+                </div>
+                <Button onClick={handleAddSection}><Plus className="w-4 h-4 mr-2" /> Add Section</Button>
+              </CardHeader>
+              <CardContent>
+                {sectionsLoading ? (
+                  <p className="text-muted-foreground">Loading…</p>
+                ) : apiSections.length === 0 ? (
+                  <p className="text-muted-foreground">No sections yet. Click &quot;Add Section&quot; to add one (e.g. A, 1, Alpha).</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left p-3">Name</th>
+                          <th className="text-left p-3">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {apiSections.map((s) => (
+                          <tr key={s.id} className="border-b">
+                            <td className="p-3 font-medium">{s.name}</td>
+                            <td className="p-3">
+                              <Button variant="outline" size="sm" onClick={() => { setSectionDeleteId(s.id); setSectionDeleteOpen(true); }} className="text-destructive hover:text-destructive">
+                                <Trash2 className="w-3 h-3 mr-1 inline" /> Delete
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            <Dialog open={addSectionOpen} onOpenChange={setAddSectionOpen}>
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Add Section</DialogTitle>
+                  <DialogDescription>Enter section name: a character (A), string (Alpha), or number (1).</DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-4 py-4">
+                  <div className="grid gap-2">
+                    <Label>Section name</Label>
+                    <Input
+                      value={addSectionName}
+                      onChange={e => setAddSectionName(e.target.value)}
+                      placeholder="e.g. A, 1, Alpha, Section-1"
+                      autoComplete="off"
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setAddSectionOpen(false)}>Cancel</Button>
+                  <Button onClick={handleSaveSection}><Save className="w-4 h-4 mr-2" /> Add Section</Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+            <AlertDialog open={sectionDeleteOpen} onOpenChange={setSectionDeleteOpen}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete section?</AlertDialogTitle>
+                  <AlertDialogDescription>This will remove the section from the list. Students already assigned to this section will keep their section value; you can edit them if needed.</AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={confirmDeleteSection} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </TabsContent>
+
+          {/* Subjects Tab */}
+          <TabsContent value="subjects">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-4">
+                <div>
+                  <CardTitle>Subjects by Branch</CardTitle>
+                  <CardDescription>Add, edit, or remove subjects per branch, year, and semester. Each year has 2 semesters, or import from Excel.</CardDescription>
+                </div>
+                <div className="flex gap-2 flex-wrap items-center">
+                  <Select value={subjectFilterDept || '__all__'} onValueChange={setSubjectFilterDept}>
+                    <SelectTrigger className="w-[200px]">
+                      <SelectValue placeholder="All branches" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all__">All branches</SelectItem>
+                      {apiDepartments.map(d => <SelectItem key={d.id} value={d.code}>{d.code} – {d.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Select value={subjectFilterYear || '__all__'} onValueChange={setSubjectFilterYear}>
+                    <SelectTrigger className="w-[120px]">
+                      <SelectValue placeholder="All years" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all__">All years</SelectItem>
+                      {SUBJECT_YEARS.map(y => <SelectItem key={y} value={y}>Year {y}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Select value={subjectFilterSemester || '__all__'} onValueChange={setSubjectFilterSemester}>
+                    <SelectTrigger className="w-[120px]">
+                      <SelectValue placeholder="All sems" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all__">All semesters</SelectItem>
+                      {SUBJECT_SEMESTERS.map(sem => <SelectItem key={sem} value={sem}>Sem {sem}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() =>
+                      downloadSampleExcel('/api/samples/subjects/', 'sample_subjects.xlsx')
+                    }
+                  >
+                    <FileDown className="w-4 h-4 mr-2" />
+                    Sample subjects Excel
+                  </Button>
+                  <input
+                    type="file"
+                    accept=".xlsx"
+                    className="hidden"
+                    id="subjects-bulk-import"
+                    onChange={handleImportSubjectsFromExcel}
+                  />
+                  <Button variant="outline" asChild disabled={isImporting}>
+                    <label htmlFor="subjects-bulk-import" className="cursor-pointer flex items-center">
+                      {isImporting ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Importing…
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-4 h-4 mr-2" /> Import from Excel
+                        </>
+                      )}
+                    </label>
+                  </Button>
+                  <Button onClick={handleAddSubject} disabled={apiDepartments.length === 0}>
+                    <Plus className="w-4 h-4 mr-2" /> Add Subject
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {apiDepartments.length === 0 ? (
+                  <p className="text-muted-foreground">Add branches first, then add subjects.</p>
+                ) : subjectsLoading ? (
+                  <p className="text-muted-foreground">Loading…</p>
+                ) : (Array.isArray(apiSubjects) ? apiSubjects : []).length === 0 ? (
+                  <p className="text-muted-foreground">No subjects yet. Select a branch and add a subject.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left p-3">Code</th>
+                          <th className="text-left p-3">Name</th>
+                          <th className="text-left p-3">Branch</th>
+                          <th className="text-left p-3">Year</th>
+                          <th className="text-left p-3">Sem</th>
+                          <th className="text-left p-3">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(Array.isArray(apiSubjects) ? apiSubjects : []).map((s) => (
+                          <tr key={s.id} className="border-b">
+                            <td className="p-3 font-mono font-medium">{s.code}</td>
+                            <td className="p-3">{s.name}</td>
+                            <td className="p-3">
+                              <div className="flex flex-wrap gap-1">
+                                {(s.department_codes ?? (s.department_code ? [s.department_code] : [])).map((code) => (
+                                  <Badge key={`${s.id}-${code}`} variant="secondary">{code}</Badge>
+                                ))}
+                              </div>
+                            </td>
+                            <td className="p-3"><Badge variant="outline">Year {s.year ?? '1'}</Badge></td>
+                            <td className="p-3"><Badge variant="outline">Sem {s.semester ?? '1'}</Badge></td>
+                            <td className="p-3 flex gap-2">
+                              <Button variant="outline" size="sm" onClick={() => handleEditSubject(s)}><Edit className="w-3 h-3 mr-1" /> Edit</Button>
+                              <Button variant="outline" size="sm" onClick={() => handleDeleteSubjectClick(s.id)} className="text-destructive hover:text-destructive"><Trash2 className="w-3 h-3" /></Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            <Dialog open={subjectEditOpen} onOpenChange={setSubjectEditOpen}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>{subjectEditId == null ? 'Add Subject' : 'Edit Subject'}</DialogTitle>
+                  <DialogDescription>One subject code can belong to multiple branches. Each year has 2 semesters.</DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-4 py-4">
+                  <div className="grid gap-2">
+                    <Label>Branches</Label>
+                    <div className="border rounded-lg p-4 max-h-48 overflow-y-auto space-y-3">
+                      <p className="text-xs text-muted-foreground">Choose every branch where this same subject code should be available.</p>
+                      {apiDepartments.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">No branches available.</p>
+                      ) : (
+                        apiDepartments.map((d) => (
+                          <div key={d.id} className="flex items-center space-x-2">
+                            <Checkbox
+                              id={`subject-dept-${d.id}`}
+                              checked={subjectForm.departments.includes(d.code)}
+                              onCheckedChange={(checked) =>
+                                setSubjectForm((f) => ({
+                                  ...f,
+                                  departments: checked
+                                    ? [...f.departments, d.code]
+                                    : f.departments.filter((code) => code !== d.code),
+                                }))
+                              }
+                            />
+                            <label htmlFor={`subject-dept-${d.id}`} className="text-sm cursor-pointer">
+                              {d.code} - {d.name}
+                            </label>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="grid gap-2">
+                      <Label>Year</Label>
+                      <Select value={subjectForm.year || '1'} onValueChange={v => setSubjectForm(f => ({ ...f, year: v }))}>
+                        <SelectTrigger><SelectValue placeholder="Select year" /></SelectTrigger>
+                        <SelectContent>
+                          {SUBJECT_YEARS.map(y => <SelectItem key={y} value={y}>Year {y}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="grid gap-2">
+                      <Label>Semester</Label>
+                      <Select value={subjectForm.semester || '1'} onValueChange={v => setSubjectForm(f => ({ ...f, semester: v }))}>
+                        <SelectTrigger><SelectValue placeholder="Select sem" /></SelectTrigger>
+                        <SelectContent>
+                          {SUBJECT_SEMESTERS.map(sem => <SelectItem key={sem} value={sem}>Semester {sem}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Code</Label>
+                    <Input value={subjectForm.code} onChange={e => setSubjectForm(f => ({ ...f, code: e.target.value }))} placeholder="e.g. CSE301" />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Name</Label>
+                    <Input value={subjectForm.name} onChange={e => setSubjectForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Data Structures" />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setSubjectEditOpen(false)}>Cancel</Button>
+                  <Button onClick={handleSaveSubject}><Save className="w-4 h-4 mr-2" /> Save</Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+            <AlertDialog open={subjectDeleteOpen} onOpenChange={setSubjectDeleteOpen}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete subject?</AlertDialogTitle>
+                  <AlertDialogDescription>This will remove the subject. Attendance records may still reference the subject name.</AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={confirmDeleteSubject} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </TabsContent>
+
+          {/* Faculty Tab */}
+          <TabsContent value="faculty">
+            <div className="space-y-6">
+              <Card>
+                <CardHeader className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                  <div>
+                    <CardTitle>Faculty Management</CardTitle>
+                    <CardDescription>Add, edit, remove faculty, or import from Excel.</CardDescription>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() =>
+                        downloadSampleExcel('/api/samples/faculty-registration/', 'sample_faculty_registration.xlsx')
+                      }
+                    >
+                      <FileDown className="w-4 h-4 mr-2" />
+                      Sample faculty Excel
+                    </Button>
+                    <input
+                      type="file"
+                      accept=".xlsx"
+                      className="hidden"
+                      id="faculty-bulk-import"
+                      onChange={handleImportFacultyFromExcel}
+                    />
+                    <Button variant="outline" asChild disabled={isImporting}>
+                      <label htmlFor="faculty-bulk-import" className="cursor-pointer flex items-center">
+                        {isImporting ? (
+                          <>
+                            <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Importing…
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="w-4 h-4 mr-2" /> Import from Excel
+                          </>
+                        )}
+                      </label>
+                    </Button>
+                    <Button onClick={handleAddFaculty}>
+                      <Plus className="w-4 h-4 mr-2" />
+                      Add Faculty
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {facultyLoading ? (
+                    <p className="text-muted-foreground">Loading faculty…</p>
+                  ) : apiFaculty.length === 0 ? (
+                    <div className="text-center py-12">
+                      <GraduationCap className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                      <p className="text-muted-foreground mb-4">No faculty members found</p>
+                      <Button onClick={handleAddFaculty}>
+                        <Plus className="w-4 h-4 mr-2" />
+                        Add First Faculty Member
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="border-b">
+                            <th className="text-left p-3">Name</th>
+                            <th className="text-left p-3">Email</th>
+                            <th className="text-left p-3">Departments</th>
+                            <th className="text-left p-3">Sections</th>
+                            <th className="text-left p-3">Password</th>
+                            <th className="text-left p-3">Subjects</th>
+                            <th className="text-left p-3">Contact</th>
+                            <th className="text-left p-3">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {apiFaculty.map((member) => (
+                            <tr key={member.id} className="border-b hover:bg-muted/50">
+                              <td className="p-3 font-medium">{member.full_name ?? member.username}</td>
+                              <td className="p-3 text-sm text-muted-foreground">{member.email}</td>
+                              <td className="p-3">
+                                {(() => {
+                                  const depts = Array.isArray(member.departments) && member.departments.length > 0
+                                    ? member.departments
+                                    : (member.department ?? '').split(',').map((d: string) => d.trim()).filter(Boolean);
+                                  return depts.length > 0 ? depts.join(', ') : 'N/A';
+                                })()}
+                              </td>
+                              <td className="p-3">
+                                {(() => {
+                                  const sections = Array.isArray(member.faculty_department_sections) 
+                                    ? member.faculty_department_sections 
+                                    : [];
+                                  if (sections.length === 0) return <span className="text-xs text-muted-foreground">All sections</span>;
+                                  
+                                  // Group sections by department
+                                  const byDept: Record<string, string[]> = {};
+                                  sections.forEach((fds: { department_code: string; section_name: string }) => {
+                                    if (!byDept[fds.department_code]) byDept[fds.department_code] = [];
+                                    byDept[fds.department_code].push(fds.section_name);
+                                  });
+                                  
+                                  return Object.entries(byDept).map(([dept, secs]) => (
+                                    <div key={dept} className="text-xs">
+                                      <span className="font-medium">{dept}:</span> {secs.join(', ')}
+                                    </div>
+                                  ));
+                                })()}
+                              </td>
+                              <td className="p-3 font-mono text-sm">{member.visible_password ?? '—'}</td>
+                              <td className="p-3">
+                                {(() => {
+                                  const ids = Array.isArray(member.subjects) ? member.subjects : [];
+                                  if (ids.length === 0) return <span className="text-xs text-muted-foreground">—</span>;
+                                  const labels = ids.map((id: string) => {
+                                    const s = (apiSubjects || []).find((subj: { id: number }) => String(subj.id) === String(id));
+                                    return s ? `${s.code}` : id;
+                                  });
+                                  return <span className="text-xs">{labels.join(', ')}</span>;
+                                })()}
+                              </td>
+                              <td className="p-3 text-sm">{member.phone ?? '—'}</td>
+                              <td className="p-3">
+                                <div className="flex gap-2">
+                                  <Button variant="outline" size="sm" onClick={() => handleEditFaculty(String(member.id))}>
+                                    <Edit className="w-3 h-3 mr-1" /> Edit
+                                  </Button>
+                                  <Button variant="outline" size="sm" onClick={() => handleDeleteFaculty(String(member.id))} className="text-destructive hover:text-destructive">
+                                    <Trash2 className="w-3 h-3" />
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Add/Edit Faculty Dialog */}
+            <Dialog open={isFacultyDialogOpen} onOpenChange={setIsFacultyDialogOpen}>
+              <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>
+                    {selectedFaculty ? 'Edit Faculty Member' : 'Add New Faculty Member'}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {selectedFaculty 
+                      ? 'Update faculty member information. Leave password blank to keep current password.'
+                      : 'Fill in the details to add a new faculty member.'}
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-4 py-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="faculty-name">Full Name *</Label>
+                      <Input
+                        id="faculty-name"
+                        value={facultyFormData.name}
+                        onChange={(e) => setFacultyFormData({...facultyFormData, name: e.target.value})}
+                        placeholder="Dr. John Doe"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="faculty-email">Email *</Label>
+                      <Input
+                        id="faculty-email"
+                        type="email"
+                        value={facultyFormData.email}
+                        onChange={(e) => setFacultyFormData({...facultyFormData, email: e.target.value})}
+                        placeholder="john.doe@university.edu"
+                      />
+                    </div>
+                  </div>
+
+                  {selectedFaculty && apiFaculty.find((f: { id: number; visible_password?: string | null }) => f.id === Number(selectedFaculty))?.visible_password && (
+                    <div className="space-y-2">
+                      <Label>Password (visible to admin)</Label>
+                      <p className="text-sm font-mono bg-muted px-3 py-2 rounded border">
+                        {apiFaculty.find((f: { id: number; visible_password?: string | null }) => f.id === Number(selectedFaculty))?.visible_password}
+                      </p>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="faculty-password">
+                        Password {selectedFaculty ? '(leave blank to keep current)' : '*'}
+                      </Label>
+                      <Input
+                        id="faculty-password"
+                        type="password"
+                        value={facultyFormData.password}
+                        onChange={(e) => setFacultyFormData({...facultyFormData, password: e.target.value})}
+                        placeholder={selectedFaculty ? "Leave blank to keep current" : "Enter password"}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="faculty-phone">Phone</Label>
+                      <Input
+                        id="faculty-phone"
+                        type="tel"
+                        value={facultyFormData.phone}
+                        onChange={(e) => setFacultyFormData({...facultyFormData, phone: e.target.value})}
+                        placeholder="+1-555-0100"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Departments *</Label>
+                    <p className="text-xs text-muted-foreground">Select one or more departments for this faculty member.</p>
+                    <div className="border rounded-lg p-4 max-h-40 overflow-y-auto">
+                      {apiDepartments.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">No departments. Add departments in the Branches tab first.</p>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-3">
+                          {apiDepartments.map((dept: { id: string | number; code: string; name: string }) => (
+                            <div key={String(dept.id)} className="flex items-center space-x-2">
+                              <Checkbox
+                                id={`faculty-dept-${dept.id}`}
+                                checked={facultyFormData.departmentIds.includes(dept.code)}
+                                onCheckedChange={(checked) => {
+                                  const next = checked
+                                    ? [...facultyFormData.departmentIds, dept.code]
+                                    : facultyFormData.departmentIds.filter((c: string) => c !== dept.code);
+                                  setFacultyFormData({ 
+                                    ...facultyFormData, 
+                                    departmentIds: next,
+                                    departmentSections: checked
+                                      ? [...facultyFormData.departmentSections, { departmentCode: dept.code, sectionNames: [] }]
+                                      : facultyFormData.departmentSections.filter(ds => ds.departmentCode !== dept.code)
+                                  });
+                                }}
+                              />
+                              <label
+                                htmlFor={`faculty-dept-${dept.id}`}
+                                className="text-sm font-medium leading-none cursor-pointer"
+                              >
+                                {dept.code} - {dept.name}
+                              </label>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Department Sections</Label>
+                    <p className="text-xs text-muted-foreground">Select sections for each assigned department.</p>
+                    <div className="border rounded-lg p-4 max-h-60 overflow-y-auto">
+                      {facultyFormData.departmentIds.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">Select departments first to assign sections.</p>
+                      ) : (
+                        <div className="space-y-4">
+                          {facultyFormData.departmentIds.map((deptCode) => {
+                            const dept = apiDepartments.find((d: { code: string }) => d.code === deptCode);
+                            const deptSectionEntry = facultyFormData.departmentSections.find(
+                              (ds) => ds.departmentCode === deptCode
+                            );
+                            const selectedSections = deptSectionEntry?.sectionNames || [];
+                            
+                            return (
+                              <div key={deptCode} className="space-y-2">
+                                <div className="font-medium text-sm">{dept?.code} - {dept?.name}</div>
+                                <div className="flex flex-wrap gap-2">
+                                  {apiSections.map((section: { id: number; name: string }) => (
+                                    <div key={section.id} className="flex items-center space-x-2">
+                                      <Checkbox
+                                        id={`section-${deptCode}-${section.id}`}
+                                        checked={selectedSections.includes(section.name)}
+                                        onCheckedChange={(checked) => {
+                                          const next = checked
+                                            ? [...selectedSections, section.name]
+                                            : selectedSections.filter((s) => s !== section.name);
+                                          setFacultyFormData(prev => ({
+                                            ...prev,
+                                            departmentSections: prev.departmentSections.map(ds =>
+                                              ds.departmentCode === deptCode
+                                                ? { ...ds, sectionNames: next }
+                                                : ds
+                                            ).concat(
+                                              prev.departmentSections.find(ds => ds.departmentCode === deptCode)
+                                                ? []
+                                                : [{ departmentCode: deptCode, sectionNames: next }]
+                                            )
+                                          }));
+                                        }}
+                                      />
+                                      <label
+                                        htmlFor={`section-${deptCode}-${section.id}`}
+                                        className="text-sm cursor-pointer"
+                                      >
+                                        {section.name}
+                                      </label>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Assigned Subjects</Label>
+                    <p className="text-xs text-muted-foreground">Subjects from the Subjects tab (by branch, year, semester)</p>
+                    <div className="border rounded-lg p-4 max-h-48 overflow-y-auto">
+                      {(() => {
+                        const facultyDeptCodes = facultyFormData.departmentIds || [];
+                        const assignableSubjects = (Array.isArray(apiSubjects) ? apiSubjects : []).filter(
+                          (s: { department_codes?: string[]; department_code?: string }) =>
+                            facultyDeptCodes.length === 0 || facultyDeptCodes.some((code) => subjectHasDepartment(s, code)),
+                        );
+                        if (assignableSubjects.length === 0) {
+                          return <p className="text-sm text-muted-foreground">No subjects for this branch. Add subjects in the Subjects tab first.</p>;
+                        }
+                        return (
+                          <div className="grid grid-cols-2 gap-3">
+                            {assignableSubjects.map((subject: { id: number; code: string; name: string; year?: string; semester?: string }) => (
+                              <div key={subject.id} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`subject-${subject.id}`}
+                                  checked={facultyFormData.subjects.includes(String(subject.id))}
+                                  onCheckedChange={() => toggleSubject(String(subject.id))}
+                                />
+                                <label
+                                  htmlFor={`subject-${subject.id}`}
+                                  className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+                                >
+                                  {subject.code} - {subject.name}{subject.year != null ? ` (Y${subject.year} S${subject.semester ?? '1'})` : ''}
+                                </label>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setIsFacultyDialogOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button onClick={handleSaveFaculty}>
+                    <Save className="w-4 h-4 mr-2" />
+                    {selectedFaculty ? 'Update' : 'Add'} Faculty
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
+            {/* Delete Confirmation Dialog */}
+            <AlertDialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This action cannot be undone. This will permanently delete the faculty member
+                    and all associated attendance records.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={confirmDeleteFaculty} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </TabsContent>
+
+          {/* Mentors Tab */}
+          <TabsContent value="mentors">
+            <div className="space-y-6">
+              <Card>
+                <CardHeader className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                  <div>
+                    <CardTitle>Mentor Management</CardTitle>
+                    <CardDescription>Add, edit, or remove mentors from the system.</CardDescription>
+                  </div>
+                  <Button onClick={handleAddMentor}>
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Mentor
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  {mentorsLoading ? (
+                    <p className="text-muted-foreground">Loading mentors…</p>
+                  ) : apiMentors.length === 0 ? (
+                    <div className="text-center py-12">
+                      <UserCheck className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                      <p className="text-muted-foreground mb-4">No mentors found</p>
+                      <Button onClick={handleAddMentor}>
+                        <Plus className="w-4 h-4 mr-2" />
+                        Add First Mentor
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="border-b">
+                            <th className="text-left p-3">Name</th>
+                            <th className="text-left p-3">Email</th>
+                            <th className="text-left p-3">Password</th>
+                            <th className="text-left p-3">Contact</th>
+                            <th className="text-left p-3">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {apiMentors.map((mentor) => (
+                            <tr key={mentor.id} className="border-b hover:bg-muted/50">
+                              <td className="p-3 font-medium">{mentor.full_name ?? mentor.username}</td>
+                              <td className="p-3 text-sm text-muted-foreground">{mentor.email}</td>
+                              <td className="p-3">
+                                <span className="text-xs bg-muted px-2 py-1 rounded">
+                                  {mentor.visible_password || '••••••'}
+                                </span>
+                              </td>
+                              <td className="p-3 text-sm">{mentor.phone || 'N/A'}</td>
+                              <td className="p-3">
+                                <div className="flex gap-2">
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => handleEditMentor(String(mentor.id))}
+                                  >
+                                    <Edit className="w-4 h-4" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => handleDeleteMentor(String(mentor.id))}
+                                  >
+                                    <Trash2 className="w-4 h-4 text-destructive" />
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Add/Edit Mentor Dialog */}
+            <Dialog open={isMentorDialogOpen} onOpenChange={setIsMentorDialogOpen}>
+              <DialogContent className="sm:max-w-[500px]">
+                <DialogHeader>
+                  <DialogTitle>{selectedMentor ? 'Edit Mentor' : 'Add New Mentor'}</DialogTitle>
+                  <DialogDescription>
+                    {selectedMentor ? 'Update mentor information.' : 'Create a new mentor account with their credentials.'}
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="mentor-name">Mentor Name *</Label>
+                    <Input
+                      id="mentor-name"
+                      value={mentorFormData.name}
+                      onChange={(e) => setMentorFormData(prev => ({ ...prev, name: e.target.value }))}
+                      placeholder="Enter mentor's full name"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="mentor-email">Email/Username *</Label>
+                    <Input
+                      id="mentor-email"
+                      type="email"
+                      value={mentorFormData.email}
+                      onChange={(e) => setMentorFormData(prev => ({ ...prev, email: e.target.value }))}
+                      placeholder="mentor@example.com"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="mentor-password">
+                      Password {!selectedMentor && '*'}
+                    </Label>
+                    <Input
+                      id="mentor-password"
+                      type="password"
+                      value={mentorFormData.password}
+                      onChange={(e) => setMentorFormData(prev => ({ ...prev, password: e.target.value }))}
+                      placeholder={selectedMentor ? 'Leave blank to keep current password' : 'Enter password'}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="mentor-phone">Phone Number</Label>
+                    <Input
+                      id="mentor-phone"
+                      type="tel"
+                      value={mentorFormData.phone}
+                      onChange={(e) => setMentorFormData(prev => ({ ...prev, phone: e.target.value }))}
+                      placeholder="Enter phone number (optional)"
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setIsMentorDialogOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button onClick={handleSaveMentor}>
+                    {selectedMentor ? 'Update Mentor' : 'Create Mentor'}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
+            {/* Delete Mentor Confirmation Dialog */}
+            <AlertDialog open={isMentorDeleteDialogOpen} onOpenChange={setIsMentorDeleteDialogOpen}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This action cannot be undone. This will permanently delete the mentor
+                    and all associated data.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={confirmDeleteMentor} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </TabsContent>
+
+          {/* Mentor Assignments Tab */}
+          <TabsContent value="mentor-assignments">
+            <div className="space-y-6">
+              <Card>
+                <CardHeader className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                  <div>
+                    <CardTitle>Mentor-Student Assignments</CardTitle>
+                    <CardDescription>Assign students to mentors for mentorship programs.</CardDescription>
+                  </div>
+                  <Button onClick={handleAddAssignment}>
+                    <Plus className="w-4 h-4 mr-2" />
+                    Create Assignment
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  {mentorAssignmentsLoading ? (
+                    <p className="text-muted-foreground">Loading assignments…</p>
+                  ) : apiMentorAssignments.length === 0 ? (
+                    <div className="text-center py-12">
+                      <UserCheck className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                      <p className="text-muted-foreground mb-4">No mentor-student assignments found</p>
+                      <Button onClick={handleAddAssignment}>
+                        <Plus className="w-4 h-4 mr-2" />
+                        Create First Assignment
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="border-b">
+                            <th className="text-left p-3">Mentor</th>
+                            <th className="text-left p-3">Student</th>
+                            <th className="text-left p-3">Roll Number</th>
+                            <th className="text-left p-3">Department</th>
+                            <th className="text-left p-3">Section</th>
+                            <th className="text-left p-3">Assigned Date</th>
+                            <th className="text-left p-3">Notes</th>
+                            <th className="text-left p-3">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {apiMentorAssignments.map((assignment) => (
+                            <tr key={assignment.id} className="border-b hover:bg-muted/50">
+                              <td className="p-3">
+                                <div>
+                                  <div className="font-medium">{assignment.mentor_name}</div>
+                                  <div className="text-xs text-muted-foreground">{assignment.mentor_email}</div>
+                                </div>
+                              </td>
+                              <td className="p-3">
+                                <div>
+                                  <div className="font-medium">{assignment.student_name}</div>
+                                  <div className="text-xs text-muted-foreground">{assignment.student_email}</div>
+                                </div>
+                              </td>
+                              <td className="p-3 text-sm">{assignment.student_roll_number || 'N/A'}</td>
+                              <td className="p-3 text-sm">{assignment.student_department || 'N/A'}</td>
+                              <td className="p-3 text-sm">{assignment.student_section || 'N/A'}</td>
+                              <td className="p-3 text-sm">
+                                {new Date(assignment.assigned_at).toLocaleDateString()}
+                              </td>
+                              <td className="p-3 text-sm max-w-xs truncate">
+                                {assignment.notes || '-'}
+                              </td>
+                              <td className="p-3">
+                                <div className="flex gap-2">
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => handleEditAssignment(assignment.id)}
+                                  >
+                                    <Edit className="w-4 h-4" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => handleDeleteAssignment(assignment.id)}
+                                  >
+                                    <Trash2 className="w-4 h-4 text-destructive" />
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Add/Edit Assignment Dialog */}
+            <Dialog open={isAssignmentDialogOpen} onOpenChange={setIsAssignmentDialogOpen}>
+              <DialogContent className="sm:max-w-[500px]">
+                <DialogHeader>
+                  <DialogTitle>{selectedAssignment ? 'Edit Assignment' : 'Create New Assignment'}</DialogTitle>
+                  <DialogDescription>
+                    {selectedAssignment ? 'Update mentor-student assignment details.' : 'Assign a student to a mentor for mentorship.'}
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="assignment-mentor">Mentor *</Label>
+                    <Select
+                      value={assignmentFormData.mentor_id}
+                      onValueChange={(value) => setAssignmentFormData(prev => ({ ...prev, mentor_id: value }))}
+                    >
+                      <SelectTrigger id="assignment-mentor">
+                        <SelectValue placeholder="Select a mentor" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {apiMentors.map((mentor) => (
+                          <SelectItem key={mentor.id} value={String(mentor.id)}>
+                            {mentor.full_name || mentor.username} ({mentor.email})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="assignment-student">Student *</Label>
+                    <Select
+                      value={assignmentFormData.student_id}
+                      onValueChange={(value) => setAssignmentFormData(prev => ({ ...prev, student_id: value }))}
+                    >
+                      <SelectTrigger id="assignment-student">
+                        <SelectValue placeholder="Select a student" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {apiStudents.map((student) => (
+                          <SelectItem key={student.id} value={String(student.id)}>
+                            {student.full_name || student.username} ({student.roll_number || 'No Roll Number'})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="assignment-notes">Notes</Label>
+                    <Input
+                      id="assignment-notes"
+                      value={assignmentFormData.notes}
+                      onChange={(e) => setAssignmentFormData(prev => ({ ...prev, notes: e.target.value }))}
+                      placeholder="Add optional notes about this assignment"
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setIsAssignmentDialogOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button onClick={handleSaveAssignment}>
+                    {selectedAssignment ? 'Update Assignment' : 'Create Assignment'}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </TabsContent>
+
+          {/* QR Attendance Tab */}
+          <TabsContent value="qr-attendance">
+            <Card>
+              <CardHeader className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                <div>
+                  <CardTitle>QR Attendance Management</CardTitle>
+                  <CardDescription>View and manage QR attendance sessions for all faculty</CardDescription>
+                </div>
+                <Button onClick={() => setAdminQrSessionDialogOpen(true)}>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Start New Session
+                </Button>
+              </CardHeader>
+              <CardContent>
+                {adminActiveQrSession ? (
+                  <div className="space-y-6">
+                    {/* Active Session Display */}
+                    <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-6">
+                      <div className="flex flex-col md:flex-row gap-6">
+                        <div className="flex-1">
+                          <h3 className="text-lg font-semibold mb-4">Active Session</h3>
+                          <div className="space-y-2">
+                            <div className="flex justify-between">
+                              <span className="text-sm text-muted-foreground">Subject:</span>
+                              <span className="font-medium">{adminActiveQrSession.subject}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-sm text-muted-foreground">Duration:</span>
+                              <span className="font-medium">{adminActiveQrSession.duration_hours} hour(s)</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-sm text-muted-foreground">Attendance Count:</span>
+                              <span className="font-medium text-green-600">{adminActiveQrSession.attendance_count}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex flex-col items-center">
+                          {adminQrCodeImage ? (
+                            <div className="bg-white p-4 rounded-lg shadow-md">
+                              <img src={adminQrCodeImage} alt="QR Code" className="w-48 h-48" />
+                            </div>
+                          ) : (
+                            <div className="w-48 h-48 bg-gray-200 rounded-lg flex items-center justify-center">
+                              <span className="text-sm text-muted-foreground">Loading QR...</span>
+                            </div>
+                          )}
+                          <p className="text-xs text-muted-foreground mt-2">QR refreshes every 5 seconds</p>
+                        </div>
+                      </div>
+                      <div className="mt-4 flex gap-2">
+                        <Button 
+                          variant="destructive" 
+                          onClick={handleAdminCloseQrSession}
+                        >
+                          Close Session
+                        </Button>
+                        <Button 
+                          variant="outline"
+                          onClick={handleAdminViewQrRecords}
+                        >
+                          View Records
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {adminQrSessions.length === 0 ? (
+                      <div className="text-center py-12">
+                        <p className="text-muted-foreground mb-4">No QR attendance sessions found</p>
+                        <Button onClick={() => setAdminQrSessionDialogOpen(true)}>
+                          <Plus className="w-4 h-4 mr-2" />
+                          Start First Session
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="border rounded-lg overflow-hidden">
+                        <table className="w-full">
+                          <thead className="bg-muted">
+                            <tr>
+                              <th className="px-4 py-2 text-left text-sm font-medium">Faculty</th>
+                              <th className="px-4 py-2 text-left text-sm font-medium">Subject</th>
+                              <th className="px-4 py-2 text-left text-sm font-medium">Duration (hours)</th>
+                              <th className="px-4 py-2 text-left text-sm font-medium">Attendance</th>
+                              <th className="px-4 py-2 text-left text-sm font-medium">Status</th>
+                              <th className="px-4 py-2 text-left text-sm font-medium">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {adminQrSessions.map((session: any) => (
+                              <tr key={session.id} className="border-t hover:bg-muted/50">
+                                <td className="px-4 py-2 text-sm">{session.faculty_name}</td>
+                                <td className="px-4 py-2 text-sm">{session.subject}</td>
+                                <td className="px-4 py-2 text-sm">{session.duration_hours} hour(s)</td>
+                                <td className="px-4 py-2 text-sm">{session.attendance_count}</td>
+                                <td className="px-4 py-2 text-sm">
+                                  <Badge variant={session.is_active ? 'default' : 'secondary'}>
+                                    {session.is_active ? 'Active' : 'Closed'}
+                                  </Badge>
+                                </td>
+                                <td className="px-4 py-2 text-sm">
+                                  <div className="flex gap-2">
+                                    {session.is_active && (
+                                      <Button 
+                                        variant="outline" 
+                                        size="sm"
+                                        onClick={() => handleAdminActivateQrSession(session.id)}
+                                      >
+                                        View
+                                      </Button>
+                                    )}
+                                    <Button 
+                                      variant="destructive" 
+                                      size="sm"
+                                      onClick={() => handleAdminDeleteQrSession(session.id)}
+                                    >
+                                      Delete
+                                    </Button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* QR Attendance Records Dialog */}
+            {adminQrAttendanceRecords.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Attendance Records</CardTitle>
+                  <CardDescription>Students who marked attendance via QR</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="border rounded-lg overflow-hidden">
+                    <table className="w-full">
+                      <thead className="bg-muted">
+                        <tr>
+                          <th className="px-4 py-2 text-left text-sm font-medium">Name</th>
+                          <th className="px-4 py-2 text-left text-sm font-medium">Roll Number</th>
+                          <th className="px-4 py-2 text-left text-sm font-medium">Section</th>
+                          <th className="px-4 py-2 text-left text-sm font-medium">Scanned At</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminQrAttendanceRecords.map((record) => (
+                          <tr key={record.id} className="border-t hover:bg-muted/50">
+                            <td className="px-4 py-2 text-sm">{record.student_name}</td>
+                            <td className="px-4 py-2 text-sm">{record.student_roll_number}</td>
+                            <td className="px-4 py-2 text-sm">{record.student_section}</td>
+                            <td className="px-4 py-2 text-sm">{new Date(record.scanned_at).toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          {/* Mark Attendance Tab (same as Faculty) */}
+          <TabsContent value="mark-attendance" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Mark Attendance</CardTitle>
+                <CardDescription>Select branch(es), date, year, semester, subject(s), and section(s). Then mark students present/absent.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Branch</label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal">
+                          {attDepts.includes('__all__') ? 'All branches' : attDepts.length > 0 ? `${attDepts.length} selected` : 'Select branch(es)'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-72 p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => { setAttDepts(['__all__']); setAttSubjects([]); }}>Select all</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => { setAttDepts([]); setAttSubjects([]); }}>Clear all</Button>
+                          </div>
+                        </div>
+                        <div className="flex items-center space-x-2 mb-2">
+                          <Checkbox id="att-branch-all" checked={attDepts.includes('__all__')} onCheckedChange={(c) => { if (c) { setAttDepts(['__all__']); } else { setAttDepts([]); } setAttSubjects([]); }} />
+                          <label htmlFor="att-branch-all" className="text-sm font-medium cursor-pointer">All branches</label>
+                        </div>
+                        {(apiDepartments || []).map((d: { id: number; code: string; name: string }) => (
+                          <div key={d.id} className="flex items-center space-x-2">
+                            <Checkbox
+                              id={`att-branch-${d.id}`}
+                              checked={attDepts.includes('__all__') || attDepts.includes(d.code)}
+                              onCheckedChange={(checked) => {
+                                const current = attDepts.includes('__all__') ? [] : attDepts;
+                                const next = checked ? [...current, d.code] : current.filter(v => v !== d.code);
+                                setAttDepts(next);
+                                setAttSubjects([]);
+                              }}
+                            />
+                            <label htmlFor={`att-branch-${d.id}`} className="text-sm cursor-pointer">{d.code} – {d.name}</label>
+                          </div>
+                        ))}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Date</label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className={cn('w-full justify-start text-left font-normal', !attDate && 'text-muted-foreground')}>
+                          <CalendarIcon className="mr-2 h-4 w-4" />
+                          {attDate ? format(attDate, 'PPP') : 'Pick date'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0">
+                        <Calendar
+                          mode="single"
+                          selected={attDate}
+                          onSelect={(d) => d && setAttDate(d)}
+                          disabled={(d) => d > todayForAttendance}
+                          className="p-3 pointer-events-auto"
+                        />
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Year</label>
+                    <Select value={attYear} onValueChange={setAttYear}>
+                      <SelectTrigger><SelectValue placeholder="Year" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__all__">All years</SelectItem>
+                        <SelectItem value="1">Year 1</SelectItem>
+                        <SelectItem value="2">Year 2</SelectItem>
+                        <SelectItem value="3">Year 3</SelectItem>
+                        <SelectItem value="4">Year 4</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Semester</label>
+                    <Select value={attSemester} onValueChange={setAttSemester}>
+                      <SelectTrigger><SelectValue placeholder="Semester" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__all__">All</SelectItem>
+                        <SelectItem value="1">Sem 1</SelectItem>
+                        <SelectItem value="2">Sem 2</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Subject</label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal">
+                          {attSubjects.length > 0 ? `${attSubjects.length} selected` : 'Select subject(s)'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-80 p-3 max-h-72 overflow-y-auto">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttSubjects((attSubjectsSem || []).map((s: { id: number }) => String(s.id)))}>Select all</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttSubjects([])}>Clear all</Button>
+                          </div>
+                        </div>
+                        {(attSubjectsSem || []).length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No subjects for selected branch(es).</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {(attSubjectsSem || []).map((s: { id: number; name: string; code: string }) => (
+                              <div key={s.id} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`att-subj-${s.id}`}
+                                  checked={attSubjects.includes(String(s.id))}
+                                  onCheckedChange={(checked) => {
+                                    const id = String(s.id);
+                                    const next = checked ? [...attSubjects, id] : attSubjects.filter(v => v !== id);
+                                    setAttSubjects(next);
+                                  }}
+                                />
+                                <label htmlFor={`att-subj-${s.id}`} className="text-sm cursor-pointer">{s.name} ({s.code})</label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Section</label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal">
+                          {attSections.length > 0 ? `${attSections.length} selected` : 'Select section(s)'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-64 p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttSections((apiSections || []).map(s => s.name))}>Select all</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttSections([])}>Clear all</Button>
+                          </div>
+                        </div>
+                        {(apiSections || []).length === 0 ? (
+                          <p className="text-sm text-muted-foreground">Add sections in Sections tab</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {(apiSections || []).map((s: { id: number; name: string }) => (
+                              <div key={s.id} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`att-sec-${s.id}`}
+                                  checked={attSections.includes(s.name)}
+                                  onCheckedChange={(checked) => {
+                                    const next = checked ? [...attSections, s.name] : attSections.filter(v => v !== s.name);
+                                    setAttSections(next);
+                                  }}
+                                />
+                                <label htmlFor={`att-sec-${s.id}`} className="text-sm cursor-pointer">{s.name}</label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-4 items-end mb-4">
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium">Total hours (this class)</label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={24}
+                      value={attSessionTotalHours}
+                      onChange={e => {
+                        const v = parseInt(e.target.value, 10);
+                        if (!isNaN(v) && v >= 1 && v <= 24) {
+                          setAttSessionTotalHours(v);
+                          setAttData(prev => {
+                            const next = { ...prev };
+                            attStudentsInSection.forEach(s => {
+                              const current = next[s.id] ?? 0;
+                              next[s.id] = Math.min(current, v);
+                            });
+                            return next;
+                          });
+                        }
+                      }}
+                      className="w-20"
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={() => handleAttSelectAll(true)}>All Present ({attSessionTotalHours} hr)</Button>
+                    <Button variant="outline" size="sm" onClick={() => handleAttSelectAll(false)}>All Absent</Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            {attSubjects.length > 0 && attSections.length > 0 && (
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between">
+                  <div>
+                    <CardTitle>Students in Sections: {attSections.join(', ')}</CardTitle>
+                    <CardDescription>{selectedAttSubjectObjs.map((s: { name: string }) => s.name).join(', ')} – {format(attDate, 'PPP')} · {attSessionTotalHours} hour(s)</CardDescription>
+                  </div>
+                  <Button onClick={handleAttSave} disabled={attStudentsInSection.length === 0}>
+                    <Save className="w-4 h-4 mr-2" /> Save Attendance
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  {attStudentsLoading ? (
+                    <p className="text-muted-foreground">Loading students…</p>
+                  ) : attStudentsInSection.length === 0 ? (
+                    <p className="text-muted-foreground">No students in selected filters. Select branch/section and verify students exist.</p>
+                  ) : (
+                    <div className="grid gap-2">
+                      {attStudentsInSection.map((student, idx) => {
+                        const attended = attData[student.id] ?? 0;
+                        return (
+                          <div key={student.id} className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50 flex-wrap gap-2">
+                            <div className="flex items-center space-x-4">
+                              <div className="w-8 h-8 bg-primary/10 rounded-full flex items-center justify-center text-sm font-medium">{idx + 1}</div>
+                              <div>
+                                <div className="font-medium">{student.name}</div>
+                                <div className="text-sm text-muted-foreground">{student.rollNumber}</div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-4 flex-wrap">
+                              <div className="flex items-center space-x-2">
+                                <Checkbox id={`att-p-${student.id}`} checked={attended >= attSessionTotalHours} onCheckedChange={(c) => handleAttChange(student.id, c === true)} />
+                                <label htmlFor={`att-p-${student.id}`} className="text-sm font-medium cursor-pointer">Present</label>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <Checkbox id={`att-a-${student.id}`} checked={attended === 0} onCheckedChange={(c) => handleAttChange(student.id, c !== true)} />
+                                <label htmlFor={`att-a-${student.id}`} className="text-sm font-medium cursor-pointer">Absent</label>
+                              </div>
+                              {attSessionTotalHours > 1 && (
+                                <div className="flex items-center gap-1">
+                                  <label htmlFor={`att-hr-${student.id}`} className="text-sm text-muted-foreground">Attended (hrs):</label>
+                                  <Input
+                                    id={`att-hr-${student.id}`}
+                                    type="number"
+                                    min={0}
+                                    max={attSessionTotalHours}
+                                    value={attended}
+                                    onChange={e => handleAttHoursChange(student.id, parseFloat(e.target.value) || 0)}
+                                    className="w-16 h-8 text-center"
+                                  />
+                                  <span className="text-sm text-muted-foreground">/ {attSessionTotalHours}</span>
+                                </div>
+                              )}
+                              <div className="w-8 h-8 flex items-center justify-center">
+                                {attended >= attSessionTotalHours && <CheckCircle className="w-5 h-5 text-success" />}
+                                {attended === 0 && <XCircle className="w-5 h-5 text-destructive" />}
+                                {attended > 0 && attended < attSessionTotalHours && <Clock className="w-5 h-5 text-muted-foreground" />}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+            <Card>
+              <CardHeader>
+                <CardTitle>Bulk Attendance Upload</CardTitle>
+                <CardDescription>Upload an Excel (.xlsx) file with roll_number, subject, date/dates, and attended_hours/total_hours or status.</CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() =>
+                    downloadSampleExcel('/api/samples/bulk-attendance/', 'sample_bulk_attendance.xlsx')
+                  }
+                >
+                  <FileDown className="w-4 h-4 mr-2" />
+                  Sample attendance Excel
+                </Button>
+                <input type="file" accept=".xlsx" onChange={handleBulkAttendanceUpload} disabled={isUploadingAttendance} className="hidden" id="admin-bulk-attendance" />
+                <Button asChild variant="outline" disabled={isUploadingAttendance}>
+                  <label htmlFor="admin-bulk-attendance" className="cursor-pointer flex items-center justify-center">
+                    {isUploadingAttendance ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Uploading…</> : <><Upload className="w-4 h-4 mr-2" /> Upload Attendance Excel</>}
+                  </label>
+                </Button>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Attendance Records Tab */}
+          <TabsContent value="attendance-records" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>All Attendance Records</CardTitle>
+                <CardDescription>System-wide attendance entries. If you do not choose any filters, all records are shown. Use Show all to reset everything.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+                  <div className="space-y-1">
+                    <Label>Year</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal">
+                          {attRecordFilterYears.length > 0 ? `${attRecordFilterYears.length} selected` : 'All years'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-64 p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterYears(attRecordYearOptions)}>Select all</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterYears([])}>Show all</Button>
+                          </div>
+                        </div>
+                        {attRecordYearOptions.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No years available.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {attRecordYearOptions.map((y) => (
+                              <div key={y} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`att-rec-year-${y}`}
+                                  checked={attRecordFilterYears.includes(y)}
+                                  onCheckedChange={(checked) => setAttRecordFilterYears(checked ? [...attRecordFilterYears, y] : attRecordFilterYears.filter(v => v !== y))}
+                                />
+                                <label htmlFor={`att-rec-year-${y}`} className="text-sm cursor-pointer">Year {y}</label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Branch</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal">
+                          {attRecordFilterBranches.length > 0 ? `${attRecordFilterBranches.length} selected` : 'All branches'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-72 p-3 max-h-72 overflow-y-auto">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterBranches(attRecordBranchOptions)}>Select all</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterBranches([])}>Show all</Button>
+                          </div>
+                        </div>
+                        {attRecordBranchOptions.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No branches available.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {attRecordBranchOptions.map((branch) => (
+                              <div key={branch} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`att-rec-branch-${branch}`}
+                                  checked={attRecordFilterBranches.includes(branch)}
+                                  onCheckedChange={(checked) => setAttRecordFilterBranches(checked ? [...attRecordFilterBranches, branch] : attRecordFilterBranches.filter(v => v !== branch))}
+                                />
+                                <label htmlFor={`att-rec-branch-${branch}`} className="text-sm cursor-pointer">{branch}</label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Section</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal">
+                          {attRecordFilterSections.length > 0 ? `${attRecordFilterSections.length} selected` : 'All sections'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-64 p-3 max-h-72 overflow-y-auto">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterSections(attRecordSectionOptions)}>Select all</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterSections([])}>Show all</Button>
+                          </div>
+                        </div>
+                        {attRecordSectionOptions.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No sections available.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {attRecordSectionOptions.map((section) => (
+                              <div key={section} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`att-rec-sec-${section}`}
+                                  checked={attRecordFilterSections.includes(section)}
+                                  onCheckedChange={(checked) => setAttRecordFilterSections(checked ? [...attRecordFilterSections, section] : attRecordFilterSections.filter(v => v !== section))}
+                                />
+                                <label htmlFor={`att-rec-sec-${section}`} className="text-sm cursor-pointer">{section}</label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Subject</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal">
+                          {attRecordFilterSubjects.length > 0 ? `${attRecordFilterSubjects.length} selected` : 'All subjects'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-80 p-3 max-h-72 overflow-y-auto">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterSubjects(attRecordSubjectOptions)}>Select all</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterSubjects([])}>Show all</Button>
+                          </div>
+                        </div>
+                        {attRecordSubjectOptions.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No subjects available.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {attRecordSubjectOptions.map((subject) => (
+                              <div key={subject} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`att-rec-sub-${subject}`}
+                                  checked={attRecordFilterSubjects.includes(subject)}
+                                  onCheckedChange={(checked) => setAttRecordFilterSubjects(checked ? [...attRecordFilterSubjects, subject] : attRecordFilterSubjects.filter(v => v !== subject))}
+                                />
+                                <label htmlFor={`att-rec-sub-${subject}`} className="text-sm cursor-pointer">{subject}</label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-4 items-end mb-4">
+                  <div className="space-y-1">
+                    <Label>From date</Label>
+                    <Input
+                      type="date"
+                      value={attReportFromDate ? format(attReportFromDate, 'yyyy-MM-dd') : ''}
+                      onChange={e => {
+                        const v = e.target.value;
+                        setAttReportFromDate(v ? new Date(v) : null);
+                      }}
+                      className="w-40"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>To date</Label>
+                    <Input
+                      type="date"
+                      value={attReportToDate ? format(attReportToDate, 'yyyy-MM-dd') : ''}
+                      onChange={e => {
+                        const v = e.target.value;
+                        setAttReportToDate(v ? new Date(v) : null);
+                      }}
+                      className="w-40"
+                    />
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={showAllAttendanceRecordFilters}
+                  >
+                    Show all
+                  </Button>
+                </div>
+                <div className="relative max-w-md mb-4">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                  <Input
+                    className="pl-9"
+                    placeholder="Search by student name or roll number…"
+                    value={attRecordsSearchQuery}
+                    onChange={(e) => setAttRecordsSearchQuery(e.target.value)}
+                    aria-label="Search attendance records by name or roll number"
+                  />
+                </div>
+                {attRecordsForTable.length === 0 && filteredAttRecords.length > 0 && attRecordsSearchQuery.trim() && (
+                  <p className="text-sm text-muted-foreground mb-2">No records match your search.</p>
+                )}
+                <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left p-2">Date</th>
+                        <th className="text-left p-2">Roll number</th>
+                        <th className="text-left p-2">Student</th>
+                        <th className="text-left p-2">Subject</th>
+                        <th className="text-left p-2">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {attRecordsForTable.slice(0, 500).map((r, i) => (
+                        <tr key={i} className="border-b">
+                          <td className="p-2">{r.date}</td>
+                          <td className="p-2 font-mono">{attStudentIdToInfo[r.student]?.roll || '–'}</td>
+                          <td className="p-2">{attStudentIdToInfo[r.student]?.name ?? '–'}</td>
+                          <td className="p-2">{r.subject}</td>
+                          <td className="p-2"><Badge variant={r.status?.toLowerCase() === 'present' ? 'default' : 'destructive'}>{r.status || '–'}</Badge></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {attRecordsForTable.length > 500 && <p className="text-sm text-muted-foreground mt-2">Showing first 500 of {attRecordsForTable.length} filtered records.</p>}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Reports Tab */}
+          <TabsContent value="reports">
+            <div className="grid gap-6">
+              {/* Excel Export/Import */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center">
+                    <FileSpreadsheet className="w-5 h-5 mr-2" />
+                    Excel Data Management
+                  </CardTitle>
+                  <CardDescription>Export all data to Excel or import data from Excel file</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <h3 className="font-medium">Export Data to Excel</h3>
+                      <p className="text-sm text-muted-foreground">
+                        Download all data (including passwords) to Excel file.
+                      </p>
+                      <p className="text-xs font-medium text-primary">
+                        File: <code className="bg-primary/10 px-1 py-0.5 rounded">attendance_data.xlsx</code>
+                      </p>
+                      <Button 
+                        onClick={handleExportToExcel}
+                        className="w-full"
+                      >
+                        <Download className="w-4 h-4 mr-2" />
+                        Download Excel File
+                      </Button>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <h3 className="font-medium">Import students (bulk)</h3>
+                      <p className="text-sm text-muted-foreground">
+                        Upload <code className="text-xs bg-muted px-1 rounded">.xlsx</code> with columns: full_name, roll_number, email, department, section, year. Download the sample for the exact layout.
+                      </p>
+                      <div className="flex flex-col gap-2">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="w-full"
+                          onClick={() =>
+                            downloadSampleExcel('/api/samples/student-registration/', 'sample_student_registration.xlsx')
+                          }
+                        >
+                          <FileDown className="w-4 h-4 mr-2" />
+                          Download sample student Excel
+                        </Button>
+                        <div className="relative">
+                          <input
+                            type="file"
+                            accept=".xlsx,.xls"
+                            onChange={handleImportStudentsFromExcel}
+                            disabled={isImporting}
+                            className="hidden"
+                            id="excel-import"
+                          />
+                          <Button
+                            asChild
+                            variant="outline"
+                            className="w-full"
+                            disabled={isImporting}
+                          >
+                            <label htmlFor="excel-import" className="cursor-pointer flex items-center justify-center">
+                              {isImporting ? (
+                                <>
+                                  <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                                  Importing...
+                                </>
+                              ) : (
+                                <>
+                                  <Upload className="w-4 h-4 mr-2" />
+                                  Import from Excel
+                                </>
+                              )}
+                            </label>
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 p-4 bg-muted/50 rounded-lg">
+                    <h4 className="font-medium mb-2">Excel File Format:</h4>
+                    <ul className="text-sm text-muted-foreground space-y-1 list-disc list-inside">
+                      <li>The Excel file should contain sheets: <strong>Students, Faculty, Admins, Departments, Subjects, Attendance</strong></li>
+                      <li><strong>Students:</strong> Roll Number, Name, Email, <span className="text-primary font-semibold">Password</span>, Department, Section, Year, Phone</li>
+                      <li><strong>Faculty:</strong> Name, Email, <span className="text-primary font-semibold">Password</span>, Department, Phone, Subjects</li>
+                      <li><strong>Admins:</strong> Name, Email, <span className="text-primary font-semibold">Password</span></li>
+                      <li><strong>Departments:</strong> Code, Name, Head</li>
+                      <li><strong>Subjects:</strong> Code, Name, Department, Credits</li>
+                      <li><strong>Attendance:</strong> Date, Student Roll Number, Subject Code, Faculty, Status, Section</li>
+                    </ul>
+                    <p className="text-xs text-muted-foreground mt-2">
+                      <strong>Note:</strong> Data is stored in browser localStorage. Use "Download Excel File" to export all data including credentials.
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Other Reports */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Generate Reports</CardTitle>
+                  <CardDescription>
+                    Filter by branch, year, section, subject, and date range. Subject-wise and section-wise CSV exports, and the date-wise Excel export, use the same rules (leave a filter empty to include all values for that field). These filters are shared with the Attendance Records tab.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="rounded-lg border bg-muted/30 p-4 space-y-4">
+                    <p className="text-sm font-medium">Report filters</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                      <div className="space-y-1">
+                        <Label>Year</Label>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button variant="outline" className="w-full justify-start text-left font-normal rounded-xl">
+                              {attRecordFilterYears.length > 0 ? `${attRecordFilterYears.length} selected` : 'All years'}
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-64 p-3">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-xs text-muted-foreground">Quick actions</span>
+                              <div className="flex gap-2">
+                                <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterYears(attRecordYearOptions)}>Select all</Button>
+                                <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterYears([])}>Clear</Button>
+                              </div>
+                            </div>
+                            {attRecordYearOptions.length === 0 ? (
+                              <p className="text-sm text-muted-foreground">No years available.</p>
+                            ) : (
+                              <div className="space-y-2">
+                                {attRecordYearOptions.map((y) => (
+                                  <div key={y} className="flex items-center space-x-2">
+                                    <Checkbox
+                                      id={`rep-gen-year-${y}`}
+                                      checked={attRecordFilterYears.includes(y)}
+                                      onCheckedChange={(checked) => setAttRecordFilterYears(checked ? [...attRecordFilterYears, y] : attRecordFilterYears.filter((v) => v !== y))}
+                                    />
+                                    <label htmlFor={`rep-gen-year-${y}`} className="text-sm cursor-pointer">Year {y}</label>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Branch</Label>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button variant="outline" className="w-full justify-start text-left font-normal rounded-xl">
+                              {attRecordFilterBranches.length > 0 ? `${attRecordFilterBranches.length} selected` : 'All branches'}
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-72 p-3 max-h-72 overflow-y-auto">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-xs text-muted-foreground">Quick actions</span>
+                              <div className="flex gap-2">
+                                <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterBranches(attRecordBranchOptions)}>Select all</Button>
+                                <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterBranches([])}>Clear</Button>
+                              </div>
+                            </div>
+                            {attRecordBranchOptions.length === 0 ? (
+                              <p className="text-sm text-muted-foreground">No branches available.</p>
+                            ) : (
+                              <div className="space-y-2">
+                                {attRecordBranchOptions.map((branch) => (
+                                  <div key={branch} className="flex items-center space-x-2">
+                                    <Checkbox
+                                      id={`rep-gen-branch-${branch}`}
+                                      checked={attRecordFilterBranches.includes(branch)}
+                                      onCheckedChange={(checked) =>
+                                        setAttRecordFilterBranches(checked ? [...attRecordFilterBranches, branch] : attRecordFilterBranches.filter((v) => v !== branch))
+                                      }
+                                    />
+                                    <label htmlFor={`rep-gen-branch-${branch}`} className="text-sm cursor-pointer">{branch}</label>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Section</Label>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button variant="outline" className="w-full justify-start text-left font-normal rounded-xl">
+                              {attRecordFilterSections.length > 0 ? `${attRecordFilterSections.length} selected` : 'All sections'}
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-64 p-3 max-h-72 overflow-y-auto">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-xs text-muted-foreground">Quick actions</span>
+                              <div className="flex gap-2">
+                                <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterSections(attRecordSectionOptions)}>Select all</Button>
+                                <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterSections([])}>Clear</Button>
+                              </div>
+                            </div>
+                            {attRecordSectionOptions.length === 0 ? (
+                              <p className="text-sm text-muted-foreground">No sections available.</p>
+                            ) : (
+                              <div className="space-y-2">
+                                {attRecordSectionOptions.map((section) => (
+                                  <div key={section} className="flex items-center space-x-2">
+                                    <Checkbox
+                                      id={`rep-gen-sec-${section}`}
+                                      checked={attRecordFilterSections.includes(section)}
+                                      onCheckedChange={(checked) =>
+                                        setAttRecordFilterSections(checked ? [...attRecordFilterSections, section] : attRecordFilterSections.filter((v) => v !== section))
+                                      }
+                                    />
+                                    <label htmlFor={`rep-gen-sec-${section}`} className="text-sm cursor-pointer">{section}</label>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Subject</Label>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button variant="outline" className="w-full justify-start text-left font-normal rounded-xl">
+                              {attRecordFilterSubjects.length > 0 ? `${attRecordFilterSubjects.length} selected` : 'All subjects'}
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-80 p-3 max-h-72 overflow-y-auto">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-xs text-muted-foreground">Quick actions</span>
+                              <div className="flex gap-2">
+                                <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterSubjects(attRecordSubjectOptions)}>Select all</Button>
+                                <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAttRecordFilterSubjects([])}>Clear</Button>
+                              </div>
+                            </div>
+                            {attRecordSubjectOptions.length === 0 ? (
+                              <p className="text-sm text-muted-foreground">No subjects in loaded records.</p>
+                            ) : (
+                              <div className="space-y-2">
+                                {attRecordSubjectOptions.map((subject, idx) => (
+                                  <div key={subject} className="flex items-center space-x-2">
+                                    <Checkbox
+                                      id={`rep-gen-sub-${idx}`}
+                                      checked={attRecordFilterSubjects.includes(subject)}
+                                      onCheckedChange={(checked) =>
+                                        setAttRecordFilterSubjects(checked ? [...attRecordFilterSubjects, subject] : attRecordFilterSubjects.filter((v) => v !== subject))
+                                      }
+                                    />
+                                    <label htmlFor={`rep-gen-sub-${idx}`} className="text-sm cursor-pointer">{subject}</label>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-4 items-end">
+                      <div className="space-y-1">
+                        <Label>From date</Label>
+                        <Input
+                          type="date"
+                          value={attReportFromDate ? format(attReportFromDate, 'yyyy-MM-dd') : ''}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setAttReportFromDate(v ? new Date(v) : null);
+                          }}
+                          className="w-40"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>To date</Label>
+                        <Input
+                          type="date"
+                          value={attReportToDate ? format(attReportToDate, 'yyyy-MM-dd') : ''}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setAttReportToDate(v ? new Date(v) : null);
+                          }}
+                          className="w-40"
+                        />
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="rounded-xl"
+                        onClick={() => {
+                          setAttReportFromDate(null);
+                          setAttReportToDate(null);
+                          setAttRecordFilterYears([]);
+                          setAttRecordFilterBranches([]);
+                          setAttRecordFilterSections([]);
+                          setAttRecordFilterSubjects([]);
+                        }}
+                      >
+                        Clear report filters
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Matching rows: <span className="font-medium text-foreground">{filteredAttRecords.length}</span>
+                      {attRecords.length !== filteredAttRecords.length ? ` of ${attRecords.length} loaded` : ''}.
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Classes: <span className="font-medium text-foreground">{attendanceRecordsMetrics.attendedClasses}</span> /{' '}
+                      <span className="font-medium text-foreground">{attendanceRecordsMetrics.totalClasses}</span> (1 hour = 1 class) · Days:{' '}
+                      <span className="font-medium text-foreground">{attendanceRecordsMetrics.attendedDays}</span> /{' '}
+                      <span className="font-medium text-foreground">{attendanceRecordsMetrics.totalDays}</span> (all hours on a date = 1 day)
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                    <Button
+                      variant="outline"
+                      className="h-auto w-full min-w-0 flex-col items-stretch justify-start gap-2 p-4 whitespace-normal text-left"
+                      onClick={handleDownloadSubjectWise}
+                    >
+                      <Download className="mx-auto h-5 w-5 shrink-0" />
+                      <div className="min-w-0 w-full text-left">
+                        <div className="font-medium">Subject-wise Report</div>
+                        <div className="break-words text-sm text-muted-foreground">
+                          CSV: student × subject totals (attended vs scheduled hours)
+                        </div>
+                      </div>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="h-auto w-full min-w-0 flex-col items-stretch justify-start gap-2 p-4 whitespace-normal text-left"
+                      onClick={handleDownloadSectionWise}
+                    >
+                      <Download className="mx-auto h-5 w-5 shrink-0" />
+                      <div className="min-w-0 w-full text-left">
+                        <div className="font-medium">Section-wise Report</div>
+                        <div className="break-words text-sm text-muted-foreground">Same columns, sorted by section (CSV)</div>
+                      </div>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="h-auto w-full min-w-0 flex-col items-stretch justify-start gap-2 p-4 whitespace-normal text-left"
+                      onClick={handleDownloadDateWiseExcel}
+                      disabled={isDownloadingDateWise}
+                    >
+                      {isDownloadingDateWise ? (
+                        <RefreshCw className="mx-auto h-5 w-5 shrink-0 animate-spin" />
+                      ) : (
+                        <FileSpreadsheet className="mx-auto h-5 w-5 shrink-0" />
+                      )}
+                      <div className="min-w-0 w-full text-left">
+                        <div className="font-medium">Date-wise Excel</div>
+                        <div className="break-words text-sm text-muted-foreground">
+                          One row per record: roll, name, branch, section, subject, date, attended &amp; total hours
+                        </div>
+                      </div>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="h-auto w-full min-w-0 flex-col items-stretch justify-start gap-2 p-4 whitespace-normal text-left"
+                      onClick={handleDownloadDefaultersReport}
+                    >
+                      <Download className="mx-auto h-5 w-5 shrink-0" />
+                      <div className="min-w-0 w-full text-left">
+                        <div className="font-medium">Defaulters List</div>
+                        <div className="break-words text-sm text-muted-foreground">
+                          Download CSV — students below 85% attendance
+                        </div>
+                      </div>
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Bulk Attendance Upload</CardTitle>
+                  <CardDescription>Upload Excel (.xlsx) with roll_number, subject, date/dates, attended_hours/total_hours or status.</CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() =>
+                      downloadSampleExcel('/api/samples/bulk-attendance/', 'sample_bulk_attendance.xlsx')
+                    }
+                  >
+                    <FileDown className="w-4 h-4 mr-2" />
+                    Sample attendance Excel
+                  </Button>
+                  <input type="file" accept=".xlsx" onChange={handleBulkAttendanceUpload} disabled={isUploadingAttendance} className="hidden" id="reports-bulk-attendance" />
+                  <Button asChild variant="outline" disabled={isUploadingAttendance}>
+                    <label htmlFor="reports-bulk-attendance" className="cursor-pointer flex items-center justify-center">
+                      {isUploadingAttendance ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Uploading…</> : <><Upload className="w-4 h-4 mr-2" /> Upload Attendance Excel</>}
+                    </label>
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          {/* Defaulters Tab */}
+          <TabsContent value="defaulters">
+            <Card>
+              <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
+                <div>
+                  <CardTitle>Attendance Defaulters</CardTitle>
+                  <CardDescription>
+                    Filter by year, branch, section, and attendance percentage range. Download respects the selected filters and search.
+                  </CardDescription>
+                </div>
+                <Button variant="outline" className="shrink-0 rounded-xl" onClick={handleDownloadDefaultersFromTab}>
+                  <Download className="w-4 h-4 mr-2" />
+                  Download CSV
+                </Button>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
+                  <div className="space-y-1">
+                    <Label>Year</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal rounded-xl">
+                          {defaulterFilterYears.length > 0 ? `${defaulterFilterYears.length} selected` : 'All years'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-64 p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setDefaulterFilterYears(defaulterYearOptions)}>Select all</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setDefaulterFilterYears([])}>Clear</Button>
+                          </div>
+                        </div>
+                        {defaulterYearOptions.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No years available.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {defaulterYearOptions.map((y) => (
+                              <div key={y} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`def-year-${y}`}
+                                  checked={defaulterFilterYears.includes(y)}
+                                  onCheckedChange={(checked) =>
+                                    setDefaulterFilterYears(checked ? [...defaulterFilterYears, y] : defaulterFilterYears.filter((v) => v !== y))
+                                  }
+                                />
+                                <label htmlFor={`def-year-${y}`} className="text-sm cursor-pointer">Year {y}</label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Branch</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal rounded-xl">
+                          {defaulterFilterBranches.length > 0 ? `${defaulterFilterBranches.length} selected` : 'All branches'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-72 p-3 max-h-72 overflow-y-auto">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setDefaulterFilterBranches(defaulterBranchOptions)}>Select all</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setDefaulterFilterBranches([])}>Clear</Button>
+                          </div>
+                        </div>
+                        {defaulterBranchOptions.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No branches available.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {defaulterBranchOptions.map((b) => (
+                              <div key={b} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`def-branch-${b}`}
+                                  checked={defaulterFilterBranches.includes(b)}
+                                  onCheckedChange={(checked) =>
+                                    setDefaulterFilterBranches(checked ? [...defaulterFilterBranches, b] : defaulterFilterBranches.filter((v) => v !== b))
+                                  }
+                                />
+                                <label htmlFor={`def-branch-${b}`} className="text-sm cursor-pointer">{b}</label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Section</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal rounded-xl">
+                          {defaulterFilterSections.length > 0 ? `${defaulterFilterSections.length} selected` : 'All sections'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-64 p-3 max-h-72 overflow-y-auto">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setDefaulterFilterSections(defaulterSectionOptions)}>Select all</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setDefaulterFilterSections([])}>Clear</Button>
+                          </div>
+                        </div>
+                        {defaulterSectionOptions.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No sections available.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {defaulterSectionOptions.map((s) => (
+                              <div key={s} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`def-section-${s}`}
+                                  checked={defaulterFilterSections.includes(s)}
+                                  onCheckedChange={(checked) =>
+                                    setDefaulterFilterSections(checked ? [...defaulterFilterSections, s] : defaulterFilterSections.filter((v) => v !== s))
+                                  }
+                                />
+                                <label htmlFor={`def-section-${s}`} className="text-sm cursor-pointer">{s}</label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Min %</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step="0.01"
+                      value={defaulterMinPct}
+                      onChange={(e) => setDefaulterMinPct(e.target.value)}
+                      placeholder="0"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Max %</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step="0.01"
+                      value={defaulterMaxPct}
+                      onChange={(e) => setDefaulterMaxPct(e.target.value)}
+                      placeholder="85"
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2 mb-4">
+                  <Button type="button" variant="outline" size="sm" onClick={() => { setDefaulterMinPct('0'); setDefaulterMaxPct('75'); }}>
+                    Below 75%
+                  </Button>
+                  <Button type="button" variant="outline" size="sm" onClick={() => { setDefaulterMinPct('60'); setDefaulterMaxPct('75'); }}>
+                    60% to 75%
+                  </Button>
+                  <Button type="button" variant="outline" size="sm" onClick={() => { setDefaulterMinPct('0'); setDefaulterMaxPct('85'); }}>
+                    Default (below 85%)
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setDefaulterFilterYears([]);
+                      setDefaulterFilterBranches([]);
+                      setDefaulterFilterSections([]);
+                      setDefaulterMinPct('0');
+                      setDefaulterMaxPct('85');
+                      setDefaultersSearchQuery('');
+                    }}
+                  >
+                    Clear filters
+                  </Button>
+                </div>
+                <div className="relative max-w-md mb-4">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                  <Input
+                    className="pl-9"
+                    placeholder="Search by name or roll number…"
+                    value={defaultersSearchQuery}
+                    onChange={(e) => setDefaultersSearchQuery(e.target.value)}
+                    aria-label="Search defaulters by name or roll number"
+                  />
+                </div>
+                {backendDefaulters.length === 0 ? (
+                  <div className="text-center py-8">
+                    <AlertTriangle className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                    <p className="text-muted-foreground">No defaulters found. Great job!</p>
+                  </div>
+                ) : defaultersToShow.length === 0 ? (
+                  <div className="text-center py-8">
+                    <Search className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                    <p className="text-muted-foreground">No students match your search.</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left p-2">Roll Number</th>
+                          <th className="text-left p-2">Name</th>
+                          <th className="text-left p-2">Year</th>
+                          <th className="text-left p-2">Branch</th>
+                          <th className="text-left p-2">Section</th>
+                          <th className="text-left p-2">Attendance %</th>
+                          <th className="text-left p-2">Classes</th>
+                          <th className="text-left p-2">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {defaultersToShow.map((student) => (
+                            <tr key={student.id} className="border-b">
+                              <td className="p-2 font-mono text-sm">{student.roll_number ?? '–'}</td>
+                              <td className="p-2">{student.full_name ?? '–'}</td>
+                              <td className="p-2">{student.year?.trim() ? student.year : '–'}</td>
+                              <td className="p-2">{student.department ?? '–'}</td>
+                              <td className="p-2 text-sm">{formatStudentSectionsDisplay(student).replace(/^–$/, '') || '–'}</td>
+                              <td className="p-2">
+                                <Badge variant="destructive">{student.attendancePercentage}%</Badge>
+                              </td>
+                              <td className="p-2 text-sm">{student.presentClasses} / {student.totalClasses}</td>
+                              <td className="p-2">
+                                <Badge variant="outline" className="text-warning border-warning">Warning Sent</Badge>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* QR Attendance Session Dialog */}
+          <Dialog open={adminQrSessionDialogOpen} onOpenChange={setAdminQrSessionDialogOpen}>
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle>Start QR Attendance Session</DialogTitle>
+                <DialogDescription>Configure the attendance session parameters</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="admin-qr-faculty">Faculty *</Label>
+                  <Select value={adminQrSessionForm.faculty_id} onValueChange={(value) => setAdminQrSessionForm({...adminQrSessionForm, faculty_id: value})}>
+                    <SelectTrigger id="admin-qr-faculty">
+                      <SelectValue placeholder="Select faculty" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {apiFaculty.filter(f => f.role === 'faculty').map((faculty) => (
+                        <SelectItem key={faculty.id} value={String(faculty.id)}>
+                          {faculty.full_name || faculty.username}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="admin-qr-subject">Subject *</Label>
+                  <Select value={adminQrSessionForm.subject} onValueChange={(value) => setAdminQrSessionForm({...adminQrSessionForm, subject: value})}>
+                    <SelectTrigger id="admin-qr-subject">
+                      <SelectValue placeholder="Select subject" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {apiSubjects.map((subject) => (
+                        <SelectItem key={subject.id} value={subject.code}>
+                          {subject.code} - {subject.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="admin-qr-duration">Duration (hours) *</Label>
+                  <Input
+                    id="admin-qr-duration"
+                    type="number"
+                    min="1"
+                    max="24"
+                    step="0.5"
+                    value={adminQrSessionForm.duration_hours}
+                    onChange={(e) => setAdminQrSessionForm({...adminQrSessionForm, duration_hours: parseFloat(e.target.value) || 1})}
+                  />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setAdminQrSessionDialogOpen(false)}>Cancel</Button>
+                <Button onClick={handleAdminStartQrSession}>Start Session</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          {/* Profile Tab */}
+          <TabsContent value="profile" className="space-y-6">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div>
+                  <CardTitle>Profile</CardTitle>
+                  <CardDescription>Your admin account details</CardDescription>
+                </div>
+                {adminId != null && (
+                  <Button variant="outline" size="sm" onClick={() => { setProfileEditForm({ full_name: apiProfile?.full_name || '', phone: apiProfile?.phone || '', username: apiProfile?.username || '', email: apiProfile?.email || user?.email || '' }); setProfileEditOpen(true); }}>
+                    <Edit className="w-4 h-4 mr-2" /> Edit
+                  </Button>
+                )}
+              </CardHeader>
+              <CardContent>
+                <div className="grid gap-4">
+                  <div>
+                    <label className="text-sm text-muted-foreground">Username</label>
+                    <p className="font-medium">{apiProfile?.username ?? '–'}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted-foreground">Full Name</label>
+                    <p className="font-medium">{apiProfile?.full_name ?? user?.name ?? '–'}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted-foreground">Email</label>
+                    <p className="font-medium">{apiProfile?.email ?? user?.email ?? '–'}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted-foreground">Phone</label>
+                    <p className="font-medium">{apiProfile?.phone ?? '–'}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      </div>
+
+      <Dialog open={profileEditOpen} onOpenChange={setProfileEditOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit profile</DialogTitle>
+            <DialogDescription>Update your username, email, name and phone.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label>Username</Label>
+              <Input value={profileEditForm.username} onChange={e => setProfileEditForm(f => ({ ...f, username: e.target.value.trim() }))} placeholder="Username (for login display)" autoComplete="username" />
+            </div>
+            <div className="grid gap-2">
+              <Label>Email</Label>
+              <Input type="email" value={profileEditForm.email} onChange={e => setProfileEditForm(f => ({ ...f, email: e.target.value.trim() }))} placeholder="Email" autoComplete="email" />
+            </div>
+            <div className="grid gap-2">
+              <Label>Full name</Label>
+              <Input value={profileEditForm.full_name} onChange={e => setProfileEditForm(f => ({ ...f, full_name: e.target.value }))} placeholder="Full name" />
+            </div>
+            <div className="grid gap-2">
+              <Label>Phone</Label>
+              <Input value={profileEditForm.phone} onChange={e => setProfileEditForm(f => ({ ...f, phone: e.target.value }))} placeholder="Phone" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setProfileEditOpen(false)}>Cancel</Button>
+            <Button onClick={handleSaveProfile}><Save className="w-4 h-4 mr-2" /> Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={changePasswordOpen} onOpenChange={setChangePasswordOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Change password</DialogTitle>
+            <DialogDescription>Enter your current password and choose a new one.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label>Current password</Label>
+              <Input type="password" value={changePasswordForm.current_password} onChange={e => setChangePasswordForm(f => ({ ...f, current_password: e.target.value }))} placeholder="Current password" />
+            </div>
+            <div className="grid gap-2">
+              <Label>New password</Label>
+              <Input type="password" value={changePasswordForm.new_password} onChange={e => setChangePasswordForm(f => ({ ...f, new_password: e.target.value }))} placeholder="New password" />
+            </div>
+            <div className="grid gap-2">
+              <Label>Confirm new password</Label>
+              <Input type="password" value={changePasswordForm.confirm_password} onChange={e => setChangePasswordForm(f => ({ ...f, confirm_password: e.target.value }))} placeholder="Confirm" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setChangePasswordOpen(false)}>Cancel</Button>
+            <Button onClick={handleAdminChangePassword}>Change password</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};

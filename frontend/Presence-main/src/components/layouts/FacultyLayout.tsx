@@ -1,0 +1,2863 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { useAuth } from '@/contexts/AuthContext';
+import { apiUrl, authFetch } from '@/lib/api';
+import { downloadSampleExcel } from '@/lib/downloadSampleExcel';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Calendar } from '@/components/ui/calendar';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+} from 'recharts';
+import {
+  BookOpen,
+  Users,
+  Calendar as CalendarIcon,
+  Save,
+  Download,
+  LogOut,
+  GraduationCap,
+  CheckCircle,
+  XCircle,
+  Clock,
+  Upload,
+  RefreshCw,
+  Lock,
+  TrendingUp,
+  AlertTriangle,
+  FileDown,
+  Edit,
+  UserCircle,
+  Plus,
+  Eye,
+  EyeOff,
+  Maximize,
+  Minimize,
+} from 'lucide-react';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { cn } from '@/lib/utils';
+import { format } from 'date-fns';
+import { toast } from '@/hooks/use-toast';
+import { formatStudentSectionsDisplay, studentMatchesAnySection } from '@/lib/studentSections';
+import { aggregateAttendanceHoursByStudentSubject, ATTENDANCE_REPORT_CSV_HEADERS } from '@/lib/attendanceReportCsv';
+
+type ApiSubject = {
+  id: number;
+  name: string;
+  code: string;
+  department_code: string;
+  department_codes?: string[];
+  year?: string;
+  semester?: string;
+};
+
+const SAT_YEAR_OPTIONS = ['1', '2', '3', '4'] as const;
+
+type FacultyDefaulterStudent = {
+  id: number;
+  full_name: string | null;
+  roll_number: string | null;
+  username?: string;
+  department: string | null;
+  year?: string | null;
+  section?: string | null;
+  sections?: string[];
+};
+
+function computeFacultyDefaultersList(
+  list: FacultyDefaulterStudent[],
+  records: Array<{ student: number; status: string; hours?: number | null; total_hours?: number | null }>,
+): Array<FacultyDefaulterStudent & { attendancePercentage: number; presentClasses: number; totalClasses: number }> {
+  const byStudent: Record<number, { attended: number; total: number }> = {};
+  records.forEach((r) => {
+    const id = r.student;
+    if (!byStudent[id]) byStudent[id] = { attended: 0, total: 0 };
+    const totalH = r.total_hours != null && Number(r.total_hours) > 0 ? Number(r.total_hours) : 1;
+    const attendedH = r.hours != null ? Number(r.hours) : (String(r.status).toLowerCase() === 'present' ? totalH : 0);
+    byStudent[id].total += totalH;
+    byStudent[id].attended += Math.max(0, Math.min(totalH, attendedH));
+  });
+  return list
+    .map((s) => {
+      const stat = byStudent[s.id] || { attended: 0, total: 0 };
+      const pct = stat.total > 0 ? (stat.attended / stat.total) * 100 : 0;
+      return {
+        ...s,
+        attendancePercentage: Math.round(pct * 100) / 100,
+        presentClasses: Math.round(stat.attended * 100) / 100,
+        totalClasses: Math.round(stat.total * 100) / 100,
+      };
+    })
+    .filter((s) => s.attendancePercentage < 85);
+}
+
+export const FacultyLayout: React.FC = () => {
+  const { user, logout, updateSessionUser } = useAuth();
+  const todayForAttendance = new Date();
+  todayForAttendance.setHours(0, 0, 0, 0);
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [selectedBranches, setSelectedBranches] = useState<string[]>(['__all__']);
+  const [selectedSubjects, setSelectedSubjects] = useState<string[]>([]);
+  const [selectedSections, setSelectedSections] = useState<string[]>([]);
+  const [selectedYear, setSelectedYear] = useState<string>('__all__');
+  const [selectedSemester, setSelectedSemester] = useState<string>('__all__');
+  const [apiDepartments, setApiDepartments] = useState<Array<{ id: number; name: string; code: string }>>([]);
+  const [attendanceData, setAttendanceData] = useState<Record<string, number>>({});
+  const [sessionTotalHours, setSessionTotalHours] = useState<number>(1);
+  const [apiStudents, setApiStudents] = useState<Array<{ id: number; full_name: string | null; roll_number: string | null; email: string; department: string | null; section: string | null; sections?: string[]; year: string | null; is_detained?: boolean }>>([]);
+  const [studentsLoading, setStudentsLoading] = useState(false);
+  const [attendanceRecords, setAttendanceRecords] = useState<Array<{ student: number; subject: string; date: string; status: string; hours?: number | null; total_hours?: number | null }>>([]);
+  const [apiSubjects, setApiSubjects] = useState<ApiSubject[]>([]);
+  const [apiSections, setApiSections] = useState<Array<{ id: number; name: string }>>([]);
+  const [isUploadingAttendance, setIsUploadingAttendance] = useState(false);
+  const [isFacultyAttendanceFrozen, setIsFacultyAttendanceFrozen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [changePasswordForm, setChangePasswordForm] = useState({ current_password: '', new_password: '', confirm_password: '' });
+  const [apiProfile, setApiProfile] = useState<{
+    full_name?: string | null;
+    phone?: string | null;
+    username?: string | null;
+    email?: string | null;
+    departments?: string[];
+    subjects?: string[];
+  } | null>(null);
+  const [profileEditOpen, setProfileEditOpen] = useState(false);
+  const [profileEditForm, setProfileEditForm] = useState({ full_name: '', phone: '', username: '', email: '' });
+
+  /** Defaulters state for faculty dashboard */
+  const [facultyDefaulters, setFacultyDefaulters] = useState<Array<{
+    id: number;
+    full_name: string | null;
+    roll_number: string | null;
+    username?: string;
+    department: string | null;
+    year?: string | null;
+    section?: string | null;
+    sections?: string[];
+    attendancePercentage: number;
+    presentClasses: number;
+    totalClasses: number;
+  }>>([]);
+  const [defaultersSearchQuery, setDefaultersSearchQuery] = useState('');
+  const [defaulterFilterYears, setDefaulterFilterYears] = useState<string[]>([]);
+  const [defaulterFilterSections, setDefaulterFilterSections] = useState<string[]>([]);
+  const [defaulterMinPct, setDefaulterMinPct] = useState<string>('0');
+  const [defaulterMaxPct, setDefaulterMaxPct] = useState<string>('85');
+
+  /** QR Attendance state */
+  const [qrSessions, setQrSessions] = useState<Array<{
+    id: number;
+    subject: string;
+    year: string;
+    branch: string;
+    sections: string;
+    duration_hours: number;
+    start_time: string;
+    end_time: string;
+    is_active: boolean;
+    attendance_count: number;
+    is_expired: boolean;
+  }>>([]);
+  const [activeQrSession, setActiveQrSession] = useState<any>(null);
+  const [qrCodeImage, setQrCodeImage] = useState<string | null>(null);
+  const [qrRefreshInterval, setQrRefreshInterval] = useState<ReturnType<typeof setInterval> | null>(null);
+  const [qrSessionForm, setQrSessionForm] = useState({
+    subject: '',
+    duration_hours: 1
+  });
+  const [qrSessionDialogOpen, setQrSessionDialogOpen] = useState(false);
+  const [qrAttendanceRecords, setQrAttendanceRecords] = useState<Array<any>>([]);
+  const [hideSessionId, setHideSessionId] = useState(false);
+  const [displaySessionId, setDisplaySessionId] = useState<string>('');
+  const [qrFullScreenOpen, setQrFullScreenOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [viewingQrRecords, setViewingQrRecords] = useState(false);
+
+  // Toggle full screen mode
+  const toggleFullScreen = () => {
+    if (!isFullscreen) {
+      if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen();
+      } else if ((document.documentElement as any).webkitRequestFullscreen) {
+        (document.documentElement as any).webkitRequestFullscreen();
+      } else if ((document.documentElement as any).msRequestFullscreen) {
+        (document.documentElement as any).msRequestFullscreen();
+      }
+      setIsFullscreen(true);
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      } else if ((document as any).webkitExitFullscreen) {
+        (document as any).webkitExitFullscreen();
+      } else if ((document as any).msExitFullscreen) {
+        (document as any).msExitFullscreen();
+      }
+      setIsFullscreen(false);
+    }
+  };
+
+  // Listen for fullscreen changes
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+    document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+    
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
+    };
+  }, []);
+
+  // Format session ID to 5 digits
+  const formatSessionId = (id: number) => {
+    return String(id).padStart(5, '0');
+  };
+
+  /** Assigned subject ids/codes from API — only these subjects appear for this faculty */
+  const [facultyAssignedSubjectTokens, setFacultyAssignedSubjectTokens] = useState<string[]>([]);
+
+  /** Student Attendance tab — multi-select filters (independent from Mark Attendance); start empty until faculty chooses filters */
+  const [satSelectedBranches, setSatSelectedBranches] = useState<string[]>([]);
+  const [satSelectedYears, setSatSelectedYears] = useState<string[]>([]);
+  const [satSelectedSections, setSatSelectedSections] = useState<string[]>([]);
+  /** null = no subjects chosen yet (table hidden). Non-null list = explicit subject ids; table requires length > 0. */
+  const [satSubjectFilterIds, setSatSubjectFilterIds] = useState<string[] | null>(null);
+
+  const facultyId = user?.id && /^\d+$/.test(String(user.id)) ? Number(user.id) : null;
+
+  // Faculty departments from logged-in user (backend sends department as comma-separated on login)
+  const facultyDeptCodes = (user?.departmentId ?? '')
+    .toString()
+    .split(',')
+    .map((d: string) => d.trim())
+    .filter(Boolean);
+  const subjectHasDepartment = (subject: { department_codes?: string[]; department_code?: string }, deptCode: string) =>
+    Array.isArray(subject.department_codes)
+      ? subject.department_codes.includes(deptCode)
+      : subject.department_code === deptCode;
+
+  const selectedBranchCodes = selectedBranches.includes('__all__')
+    ? facultyDeptCodes
+    : selectedBranches;
+
+  const subjectsAllBase = useMemo(() => {
+    if (facultyDeptCodes.length > 0 && apiSubjects.length > 0) {
+      return apiSubjects.filter((s) => facultyDeptCodes.some((code) => subjectHasDepartment(s, code)));
+    }
+    return apiSubjects;
+  }, [apiSubjects, facultyDeptCodes.join(',')]);
+
+  /** Only subjects assigned to this faculty (admin-managed); others hidden everywhere */
+  const subjectsAll = useMemo(() => {
+    if (!facultyAssignedSubjectTokens.length) return [];
+    const tokenSet = new Set(facultyAssignedSubjectTokens.map((t) => t.trim()).filter(Boolean));
+    const tokenLower = new Set(Array.from(tokenSet).map((t) => t.toLowerCase()));
+    return subjectsAllBase.filter((s) => {
+      const id = String(s.id);
+      const code = (s.code ?? '').toString().trim();
+      return tokenSet.has(id) || (code !== '' && (tokenSet.has(code) || tokenLower.has(code.toLowerCase())));
+    });
+  }, [subjectsAllBase, facultyAssignedSubjectTokens.join('|')]);
+
+  const subjectsByBranch = selectedBranchCodes.length > 0
+    ? subjectsAll.filter((s) => selectedBranchCodes.some((code) => subjectHasDepartment(s, code)))
+    : subjectsAll;
+  const subjects = selectedSemester && selectedSemester !== '__all__'
+    ? subjectsByBranch.filter((s: { semester?: string }) => String(s.semester ?? '1') === selectedSemester)
+    : subjectsByBranch;
+  const facultyBranchOptions = apiDepartments.filter((d: { code: string }) => facultyDeptCodes.includes(d.code));
+
+  const satBranchCodes = useMemo(() => {
+    if (satSelectedBranches.length === 0) return [];
+    if (satSelectedBranches.includes('__all__')) return facultyDeptCodes;
+    return satSelectedBranches.filter((b) => b !== '__all__');
+  }, [satSelectedBranches, facultyDeptCodes.join(',')]);
+
+  const satSubjectOptions = useMemo(() => {
+    if (satBranchCodes.length === 0 || satSelectedYears.length === 0) return [];
+    return subjectsAll.filter((s) => {
+      if (!satBranchCodes.some((code) => subjectHasDepartment(s, code))) return false;
+      if (!satSelectedYears.includes(String(s.year ?? '1'))) return false;
+      return true;
+    });
+  }, [subjectsAll, satBranchCodes.join(','), satSelectedYears.join(',')]);
+
+  const satSubjectsForColumns = useMemo(() => {
+    if (satSubjectFilterIds === null) return satSubjectOptions;
+    const idSet = new Set(satSubjectFilterIds);
+    return satSubjectOptions.filter((s) => idSet.has(String(s.id)));
+  }, [satSubjectOptions, satSubjectFilterIds]);
+
+  /** Student attendance table only after branch, year, section, and at least one subject are chosen */
+  const satAttendanceViewReady = useMemo(
+    () =>
+      satBranchCodes.length > 0 &&
+      satSelectedYears.length > 0 &&
+      satSelectedSections.length > 0 &&
+      satSubjectFilterIds !== null &&
+      satSubjectFilterIds.length > 0,
+    [satBranchCodes.length, satSelectedYears.length, satSelectedSections.length, satSubjectFilterIds],
+  );
+
+  /** Profile: map assigned subject tokens to codes + names */
+  const facultyAssignedSubjectDisplay = useMemo(() => {
+    if (!facultyAssignedSubjectTokens.length) return null;
+    const rows = facultyAssignedSubjectTokens
+      .map((token) => {
+        const t = String(token).trim();
+        if (!t) return null;
+        const sub = apiSubjects.find(
+          (s) => String(s.id) === t || String(s.code).toLowerCase() === t.toLowerCase(),
+        );
+        if (sub) return { code: sub.code, name: sub.name };
+        return { code: t, name: null as string | null };
+      })
+      .filter(Boolean) as Array<{ code: string; name: string | null }>;
+    return rows.length ? rows : null;
+  }, [facultyAssignedSubjectTokens.join('|'), apiSubjects]);
+
+  const satStudentsRows = useMemo(() => {
+    if (!satAttendanceViewReady) return [];
+    return apiStudents
+      .filter((s) => !s.is_detained)
+      .filter((s) => facultyDeptCodes.length === 0 || facultyDeptCodes.includes(s.department ?? ''))
+      .filter((s) => satBranchCodes.includes(s.department ?? ''))
+      .filter((s) => {
+        if (satSelectedYears.length === 0) return true;
+        const y = (s.year ?? '').toString().trim();
+        return satSelectedYears.includes(y);
+      })
+      .filter((s) => studentMatchesAnySection(s, satSelectedSections))
+      .map((s) => ({
+        id: String(s.id),
+        name: s.full_name || s.roll_number || '',
+        rollNumber: s.roll_number || '',
+        email: s.email,
+        departmentId: s.department || '',
+        section: s.section || '',
+        year: s.year ? Number(s.year) : 0,
+      }));
+  }, [apiStudents, facultyDeptCodes.join(','), satBranchCodes.join(','), satSelectedYears.join(','), satSelectedSections.join(','), satAttendanceViewReady]);
+
+  useEffect(() => {
+    authFetch(apiUrl('/api/subjects/'))
+      .then(res => res.ok ? res.json() : [])
+      .then((data: unknown) => setApiSubjects(Array.isArray(data) ? data : []))
+      .catch(() => setApiSubjects([]));
+  }, []);
+
+  useEffect(() => {
+    authFetch(apiUrl('/api/sections/'))
+      .then(res => res.ok ? res.json() : [])
+      .then((data: unknown) => setApiSections(Array.isArray(data) ? data : []))
+      .catch(() => setApiSections([]));
+  }, []);
+
+  useEffect(() => {
+    authFetch(apiUrl('/api/departments/'))
+      .then(res => res.ok ? res.json() : [])
+      .then((data: unknown) => setApiDepartments(Array.isArray(data) ? data : []))
+      .catch(() => setApiDepartments([]));
+  }, []);
+
+  useEffect(() => {
+    if (facultyDeptCodes.length === 1 && (selectedBranches.length === 0 || selectedBranches.includes('__all__'))) {
+      setSelectedBranches([facultyDeptCodes[0]]);
+    }
+  }, [facultyDeptCodes.length, selectedBranches.length]);
+
+  useEffect(() => {
+    authFetch(apiUrl('/api/attendance-portal-freeze/'))
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setIsFacultyAttendanceFrozen(Boolean(data?.freeze_faculty_portal) && user?.role === 'faculty'))
+      .catch(() => setIsFacultyAttendanceFrozen(false));
+  }, [user?.role]);
+
+  useEffect(() => {
+    if (isFacultyAttendanceFrozen && (activeTab === 'attendance' || activeTab === 'student-attendance' || activeTab === 'reports')) {
+      setActiveTab('dashboard');
+    }
+  }, [isFacultyAttendanceFrozen, activeTab]);
+
+  useEffect(() => {
+    if (facultyDeptCodes.length === 0) {
+      setApiStudents([]);
+      return;
+    }
+    setStudentsLoading(true);
+    const params = new URLSearchParams({ role: 'student' });
+    const useStudentAttendanceScope = activeTab === 'student-attendance' && satBranchCodes.length > 0;
+    if (useStudentAttendanceScope) {
+      if (satBranchCodes.length === 1) params.set('department', satBranchCodes[0]);
+      if (satSelectedYears.length === 1) params.set('year', satSelectedYears[0]);
+    } else {
+      if (selectedBranchCodes.length === 1) params.set('department', selectedBranchCodes[0]);
+      if (selectedYear && selectedYear !== '__all__') params.set('year', selectedYear);
+    }
+    authFetch(apiUrl(`/api/users/?${params}`))
+      .then(res => res.ok ? res.json() : [])
+      .then((data: unknown) => setApiStudents(Array.isArray(data) ? data : []))
+      .catch(() => setApiStudents([]))
+      .finally(() => setStudentsLoading(false));
+  }, [facultyDeptCodes.length, activeTab, selectedBranchCodes.join(','), selectedYear, satBranchCodes.join(','), satSelectedYears.join(',')]);
+
+  useEffect(() => {
+    if (user?.role !== 'faculty' && user?.role !== 'admin') return;
+    if (isFacultyAttendanceFrozen) {
+      setAttendanceRecords([]);
+      return;
+    }
+    authFetch(apiUrl('/api/attendance/'))
+      .then(res => res.ok ? res.json() : { records: [] })
+      .then((data: { records?: Array<{ student: number; subject: string; date: string; status: string; hours?: number | null; total_hours?: number | null }> }) => setAttendanceRecords(data?.records ?? []))
+      .catch(() => setAttendanceRecords([]));
+  }, [user?.role, activeTab, isFacultyAttendanceFrozen]);
+
+  const studentsInSection = useMemo(() => {
+    return apiStudents
+      .filter(s => !s.is_detained)
+      .map(s => ({ id: String(s.id), name: s.full_name || s.roll_number || '', rollNumber: s.roll_number || '', email: s.email, departmentId: s.department || '', section: s.section || '', year: s.year ? Number(s.year) : 0 }))
+      .filter(s => (selectedBranchCodes.length === 0 || selectedBranchCodes.includes(s.departmentId)))
+      .filter(s => studentMatchesAnySection(s, selectedSections))
+      .filter(s => {
+        // Filter by year if a specific year is selected
+        if (selectedYear && selectedYear !== '__all__') {
+          return String(s.year) === selectedYear;
+        }
+        return true;
+      });
+  }, [apiStudents, selectedBranchCodes.join(','), selectedSections.join(','), selectedYear]);
+
+  // Pre-fill attendance checkboxes when one subject is selected.
+  const selectedSubjectObjs = subjects.filter(s => selectedSubjects.includes(String(s.id)));
+  const selectedSubjectCodes = selectedSubjectObjs.map(s => (s.code ?? '').trim().toLowerCase()).filter(Boolean);
+  const selectedSubjectNames = selectedSubjectObjs.map(s => (s.name ?? '').trim().toLowerCase()).filter(Boolean);
+  const studentsInSectionKey = studentsInSection.map(s => s.id).join(',');
+  useEffect(() => {
+    if (selectedSubjects.length !== 1 || selectedSections.length === 0) {
+      setAttendanceData({});
+      return;
+    }
+    const dateStr = format(selectedDate, 'yyyy-MM-dd');
+    const initial: Record<string, number> = {};
+    let sessionTotal = sessionTotalHours;
+    const subjectMatches = (s: string) => {
+      if (!s) return false;
+      const t = s.trim().toLowerCase();
+      return selectedSubjectCodes.includes(t) || selectedSubjectNames.includes(t);
+    };
+    studentsInSection.forEach(student => {
+      const record = attendanceRecords.find(
+        r => (r.date === dateStr || (r.date && r.date.slice(0, 10) === dateStr)) && subjectMatches(r.subject ?? '') && Number(r.student) === Number(student.id)
+      );
+      if (record) {
+        const th = record.total_hours != null && record.total_hours > 0 ? Number(record.total_hours) : 1;
+        if (sessionTotal === sessionTotalHours) sessionTotal = th;
+        const h = record.hours != null ? Number(record.hours) : (record.status?.toLowerCase() === 'present' ? th : 0);
+        initial[student.id] = Math.min(h, th);
+      } else {
+        initial[student.id] = 0;
+      }
+    });
+    setAttendanceData(initial);
+    if (sessionTotal !== sessionTotalHours && sessionTotal >= 1) setSessionTotalHours(sessionTotal);
+  }, [selectedDate, selectedSubjects.join(','), selectedSections.join(','), selectedSubjectCodes.join(','), selectedSubjectNames.join(','), attendanceRecords, studentsInSectionKey]);
+
+  const handleAttendanceChange = (studentId: string, isPresent: boolean) => {
+    setAttendanceData(prev => ({ ...prev, [studentId]: isPresent ? sessionTotalHours : 0 }));
+  };
+  const handleAttendanceHoursChange = (studentId: string, hours: number) => {
+    const val = Math.max(0, Math.min(sessionTotalHours, hours));
+    setAttendanceData(prev => ({ ...prev, [studentId]: val }));
+  };
+
+  const handleSaveAttendance = async () => {
+    if (isFacultyAttendanceFrozen) {
+      toast({ title: 'Attendance portal frozen', description: 'Admin has temporarily frozen faculty attendance access.', variant: 'destructive' });
+      return;
+    }
+    if (selectedSubjects.length === 0 || selectedSections.length === 0) {
+      toast({ title: 'Error', description: 'Please select at least one subject and one section.', variant: 'destructive' });
+      return;
+    }
+    const codesToSend = subjects
+      .filter(s => selectedSubjects.includes(String(s.id)))
+      .map(s => s.code)
+      .filter(Boolean);
+    if (codesToSend.length === 0) {
+      toast({ title: 'Error', description: 'Invalid subject selection.', variant: 'destructive' });
+      return;
+    }
+    if (studentsInSection.length === 0) {
+      toast({ title: 'No students', description: 'No students in this section. Check department/section filters or add students in Admin.', variant: 'destructive' });
+      return;
+    }
+    const dateStr = format(selectedDate, 'yyyy-MM-dd');
+    const payload = codesToSend.flatMap(codeToSend =>
+      studentsInSection.map(student => {
+        const hours = attendanceData[student.id] ?? 0;
+        return {
+          student: Number(student.id),
+          subject: codeToSend,
+          date: dateStr,
+          status: hours > 0 ? 'present' : 'absent',
+          hours,
+          total_hours: sessionTotalHours,
+        };
+      })
+    );
+    try {
+      const res = await authFetch(apiUrl('/api/attendance/'), {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = typeof data.detail === 'string' ? data.detail : (data.errors ? JSON.stringify(data.errors) : 'Please try again.');
+        toast({ title: 'Failed to save', description: String(msg), variant: 'destructive' });
+        return;
+      }
+      authFetch(apiUrl('/api/attendance/'))
+        .then(r => r.ok ? r.json() : { records: [] })
+        .then((d: { records?: Array<{ student: number; subject: string; date: string; status: string; hours?: number | null; total_hours?: number | null }> }) => setAttendanceRecords(d?.records ?? []))
+        .catch(() => {});
+      const savedCount = typeof data.created === 'number' ? data.created : payload.length;
+      const errList = Array.isArray(data.errors) ? data.errors : [];
+      if (errList.length > 0) {
+        toast({
+          title: savedCount > 0 ? 'Partially saved' : 'Save failed',
+          description: savedCount > 0
+            ? `Saved ${savedCount} students. ${errList.length} row(s) had errors.`
+            : `${errList.length} row(s) had errors. Check student IDs and date format.`,
+          variant: savedCount > 0 ? 'default' : 'destructive',
+        });
+      } else {
+        toast({ title: 'Success', description: `Attendance saved for ${savedCount} students.` });
+      }
+    } catch {
+      toast({ title: 'Failed to save', description: 'Network error.', variant: 'destructive' });
+      return;
+    }
+    setAttendanceData({});
+  };
+
+  const handleSelectAll = (isPresent: boolean) => {
+    const val = isPresent ? sessionTotalHours : 0;
+    const newData: Record<string, number> = {};
+    studentsInSection.forEach(student => { newData[student.id] = val; });
+    setAttendanceData(newData);
+  };
+
+  const getAttendanceStats = () => {
+    const totalStudents = studentsInSection.length;
+    const presentCount = studentsInSection.filter(s => (attendanceData[s.id] ?? 0) > 0).length;
+    const absentCount = totalStudents - presentCount;
+    return { totalStudents, presentCount, absentCount };
+  };
+
+  const stats = getAttendanceStats();
+
+  const studentIdToInfo = Object.fromEntries(
+    apiStudents.map((s) => [
+      s.id,
+      {
+        name: s.full_name || s.roll_number || '',
+        roll: s.roll_number || '',
+        branch: s.department || '',
+        year: (s.year ?? '').toString(),
+        section: formatStudentSectionsDisplay(s).replace(/^–$/, ''),
+      },
+    ]),
+  );
+
+  const downloadCsv = (filename: string, rows: string[][]) => {
+    const header = rows[0];
+    const body = rows.slice(1);
+    const csv = [header.join(','), ...body.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  const handleDownloadSubjectWise = () => {
+    const agg = aggregateAttendanceHoursByStudentSubject(attendanceRecords);
+    const rows: string[][] = [[...ATTENDANCE_REPORT_CSV_HEADERS]];
+    const enriched = agg
+      .map((a) => {
+        const info = studentIdToInfo[a.studentId];
+        if (!info) return null;
+        return { ...a, info };
+      })
+      .filter((x): x is NonNullable<typeof x> => x != null);
+    enriched.sort(
+      (a, b) =>
+        a.subject.localeCompare(b.subject) ||
+        (a.info.roll || '').localeCompare(b.info.roll || '') ||
+        (a.info.name || '').localeCompare(b.info.name || ''),
+    );
+    enriched.forEach((a) => {
+      rows.push([
+        a.info.roll ?? '',
+        a.info.name ?? '',
+        a.info.branch ?? '',
+        a.info.year ?? '',
+        a.info.section ?? '',
+        a.subject,
+        String(a.attended),
+        String(a.total),
+      ]);
+    });
+    if (rows.length <= 1) {
+      toast({ title: 'No data', description: 'No attendance records to download.', variant: 'destructive' });
+      return;
+    }
+    downloadCsv(`attendance_subject_wise_${format(new Date(), 'yyyy-MM-dd')}.csv`, rows);
+    toast({ title: 'Downloaded', description: 'Subject-wise report downloaded.' });
+  };
+
+  const handleDownloadSectionWise = () => {
+    const agg = aggregateAttendanceHoursByStudentSubject(attendanceRecords);
+    const rows: string[][] = [[...ATTENDANCE_REPORT_CSV_HEADERS]];
+    const enriched = agg
+      .map((a) => {
+        const info = studentIdToInfo[a.studentId];
+        if (!info) return null;
+        return { ...a, info };
+      })
+      .filter((x): x is NonNullable<typeof x> => x != null);
+    enriched.sort(
+      (a, b) =>
+        (a.info.section || '').localeCompare(b.info.section || '') ||
+        a.subject.localeCompare(b.subject) ||
+        (a.info.roll || '').localeCompare(b.info.roll || ''),
+    );
+    enriched.forEach((a) => {
+      rows.push([
+        a.info.roll ?? '',
+        a.info.name ?? '',
+        a.info.branch ?? '',
+        a.info.year ?? '',
+        a.info.section ?? '',
+        a.subject,
+        String(a.attended),
+        String(a.total),
+      ]);
+    });
+    if (rows.length <= 1) {
+      toast({ title: 'No data', description: 'No attendance records to download.', variant: 'destructive' });
+      return;
+    }
+    downloadCsv(`attendance_section_wise_${format(new Date(), 'yyyy-MM-dd')}.csv`, rows);
+    toast({ title: 'Downloaded', description: 'Section-wise report downloaded.' });
+  };
+
+  const handleAttendanceUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (isFacultyAttendanceFrozen) {
+      toast({ title: 'Attendance portal frozen', description: 'Admin has temporarily frozen faculty attendance access.', variant: 'destructive' });
+      event.target.value = '';
+      return;
+    }
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setIsUploadingAttendance(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch(apiUrl('/api/attendance/bulk-upload/'), {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          toast({
+            title: 'Permission denied',
+            description: 'You are not allowed to upload attendance. Log in as Faculty or Admin.',
+            variant: 'destructive',
+          });
+          return;
+        }
+        const msg =
+          (data && (data.detail || data.error)) ||
+          'Upload failed. Use columns: roll_number, subject, date; and either status or attended_hours + total_hours.';
+        toast({ title: 'Upload failed', description: String(msg), variant: 'destructive' });
+        return;
+      }
+
+      const created = typeof data.created === 'number' ? data.created : 0;
+      const updated = typeof data.updated === 'number' ? data.updated : 0;
+      const skippedExisting = typeof data.skipped_existing === 'number' ? data.skipped_existing : 0;
+      const skippedMissingStudent =
+        typeof data.skipped_missing_student === 'number' ? data.skipped_missing_student : 0;
+      const skippedMissingSubject =
+        typeof data.skipped_missing_subject === 'number' ? data.skipped_missing_subject : 0;
+      const skippedInvalid = typeof data.skipped_invalid === 'number' ? data.skipped_invalid : 0;
+      const totalSkipped = skippedExisting + skippedMissingStudent + skippedMissingSubject + skippedInvalid;
+      const errors: Array<{ row: number; reason: string }> = Array.isArray(data.errors) ? data.errors : [];
+
+      const parts = [`Created ${created} records.`];
+      if (updated > 0) parts.push(`Updated ${updated} records.`);
+      if (totalSkipped > 0) parts.push(`Skipped ${totalSkipped} rows.`);
+      let description = parts.join(' ');
+      if (errors.length > 0) {
+        const detail = errors.slice(0, 5).map((e: { row: number; reason: string }) => `Row ${e.row}: ${e.reason}`).join('. ');
+        description += (description ? ' ' : '') + (errors.length > 5 ? `${detail} (+${errors.length - 5} more)` : detail);
+      } else if (totalSkipped > 0) {
+        const why: string[] = [];
+        if (skippedMissingStudent > 0) why.push(`${skippedMissingStudent} student not found`);
+        if (skippedMissingSubject > 0) why.push(`${skippedMissingSubject} subject not found`);
+        if (skippedInvalid > 0) why.push(`${skippedInvalid} invalid`);
+        if (skippedExisting > 0) why.push(`${skippedExisting} unchanged`);
+        if (why.length) description += ' — ' + why.join('; ');
+      }
+
+      toast({
+        title: created > 0 || updated > 0 ? 'Bulk attendance upload completed' : 'No records created',
+        description: description,
+        variant: created === 0 && updated === 0 && totalSkipped > 0 ? 'destructive' : 'default',
+      });
+
+      authFetch(apiUrl('/api/attendance/'))
+        .then(r => (r.ok ? r.json() : { records: [] }))
+        .then((d: { records?: Array<{ student: number; subject: string; date: string; status: string }> }) =>
+          setAttendanceRecords(d?.records ?? []),
+        )
+        .catch(() => {});
+    } catch {
+      toast({
+        title: 'Upload failed',
+        description: 'Network error while uploading attendance Excel file.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsUploadingAttendance(false);
+      event.target.value = '';
+    }
+  };
+
+  /** Students and attendance rows scoped to this faculty's branch(es) and sections — used for dashboard analytics */
+  const facultyScopedStudents = useMemo(() => {
+    if (facultyDeptCodes.length === 0) return apiStudents;
+    
+    // Get faculty's assigned sections
+    const facultyDeptSections = user?.faculty_department_sections || [];
+    
+    return apiStudents.filter((s) => {
+      // First check if student is in faculty's departments
+      if (!facultyDeptCodes.includes(s.department ?? '')) return false;
+      
+      // If faculty has specific section assignments, filter by sections
+      if (facultyDeptSections.length > 0) {
+        const studentSections = s.sections || (s.section ? [s.section] : []);
+        return facultyDeptSections.some((fds: { department_code: string; section_name: string }) => {
+          return fds.department_code === s.department && studentSections.includes(fds.section_name);
+        });
+      }
+      
+      // If no specific section assignments, include all students in the department
+      return true;
+    });
+  }, [apiStudents, facultyDeptCodes.join(','), user?.faculty_department_sections]);
+
+  const facultyScopedStudentIds = useMemo(
+    () => new Set(facultyScopedStudents.map((s) => s.id)),
+    [facultyScopedStudents],
+  );
+
+  const facultyScopedRecords = useMemo(
+    () => attendanceRecords.filter((r) => facultyScopedStudentIds.has(r.student)),
+    [attendanceRecords, facultyScopedStudentIds],
+  );
+
+  const facultyDashboardMetrics = useMemo(() => {
+    const records = facultyScopedRecords;
+    let attendedHours = 0;
+    let totalHours = 0;
+    const byStudentHours: Record<number, { attended: number; total: number }> = {};
+    const byDate: Record<string, { attended: number; total: number }> = {};
+    records.forEach((r) => {
+      const th = r.total_hours != null && Number(r.total_hours) > 0 ? Number(r.total_hours) : 1;
+      const ah = r.hours != null ? Number(r.hours) : (String(r.status).toLowerCase() === 'present' ? th : 0);
+      const clampedAh = Math.max(0, Math.min(th, ah));
+      attendedHours += clampedAh;
+      totalHours += th;
+      const id = r.student;
+      if (!byStudentHours[id]) byStudentHours[id] = { attended: 0, total: 0 };
+      byStudentHours[id].total += th;
+      byStudentHours[id].attended += clampedAh;
+      const dateKey = String(r.date || '').slice(0, 10);
+      if (dateKey) {
+        if (!byDate[dateKey]) byDate[dateKey] = { attended: 0, total: 0 };
+        byDate[dateKey].total += th;
+        byDate[dateKey].attended += clampedAh;
+      }
+    });
+    const totalClasses = Math.round(totalHours * 100) / 100;
+    const presentCount = Math.round(attendedHours * 100) / 100;
+    const attendancePercentage =
+      totalHours > 0 ? Math.round((attendedHours / totalHours) * 10000) / 100 : 0;
+
+    const totalDays = Object.keys(byDate).length;
+    const attendedDays = Object.values(byDate).filter((d) => d.attended > 0 && d.total > 0).length;
+
+    return {
+      attendancePercentage,
+      presentCount,
+      totalClasses,
+      attendedHours: Math.round(attendedHours * 100) / 100,
+      totalHours: Math.round(totalHours * 100) / 100,
+      attendedDays,
+      totalDays,
+      defaultersCount: facultyDefaulters.length,
+    };
+  }, [facultyScopedRecords, facultyScopedStudents, facultyDefaulters.length]);
+
+  const facultyWeeklyTrend = useMemo(() => {
+    const records = facultyScopedRecords;
+    const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const byDate: Record<string, { present: number; total: number }> = {};
+    records.forEach((r) => {
+      const d = r.date ?? '';
+      if (!d) return;
+      if (!byDate[d]) byDate[d] = { present: 0, total: 0 };
+      byDate[d].total++;
+      if (String(r.status).toLowerCase() === 'present') byDate[d].present++;
+    });
+    const byDayOfWeek: Record<number, number[]> = { 0: [], 1: [], 2: [], 3: [], 4: [], 5: [], 6: [] };
+    Object.entries(byDate).forEach(([dateStr, { present, total }]) => {
+      if (total === 0) return;
+      const pct = (present / total) * 100;
+      try {
+        const day = new Date(dateStr).getDay();
+        byDayOfWeek[day].push(pct);
+      } catch {
+        // skip invalid date
+      }
+    });
+    return dayNames.map((name, i) => {
+      const dayIndex = i === 6 ? 0 : i + 1;
+      const arr = byDayOfWeek[dayIndex] || [];
+      const avg = arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+      return { name, attendance: Math.round(avg * 10) / 10 };
+    });
+  }, [facultyScopedRecords]);
+
+  const facultyDistributionPie = useMemo(() => {
+    const records = facultyScopedRecords;
+    const byStudent: Record<number, { present: number; total: number }> = {};
+    records.forEach((r) => {
+      const id = r.student;
+      if (!byStudent[id]) byStudent[id] = { present: 0, total: 0 };
+      byStudent[id].total++;
+      if (String(r.status).toLowerCase() === 'present') byStudent[id].present++;
+    });
+    const list = facultyScopedStudents;
+    const studentsWithPct = list.map((s) => {
+      const stat = byStudent[s.id] || { present: 0, total: 0 };
+      return stat.total > 0 ? (stat.present / stat.total) * 100 : 0;
+    });
+    const buckets = [
+      { label: '90–100%', min: 90, max: 101, color: 'hsl(224, 76%, 38%)' },
+      { label: '75–90%', min: 75, max: 90, color: 'hsl(217, 91%, 52%)' },
+      { label: '50–75%', min: 50, max: 75, color: 'hsl(38, 92%, 50%)' },
+      { label: 'Below 50%', min: 0, max: 50, color: 'hsl(0, 84%, 60%)' },
+    ];
+    const counts = buckets.map((b) => studentsWithPct.filter((p) => p >= b.min && p < b.max).length);
+    const totalStudents = list.length;
+    return buckets
+      .map((b, i) => ({
+        name: b.label,
+        value: totalStudents > 0 ? Math.round((counts[i] / totalStudents) * 100) : 0,
+        color: b.color,
+      }))
+      .filter((d) => d.value > 0);
+  }, [facultyScopedRecords, facultyScopedStudents]);
+
+  useEffect(() => {
+    if (facultyId == null) return;
+    let cancelled = false;
+    authFetch(apiUrl(`/api/users/${facultyId}/`))
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        const sub = data.subjects;
+        if (Array.isArray(sub)) {
+          setFacultyAssignedSubjectTokens(sub.map((x: unknown) => String(x).trim()).filter(Boolean));
+        } else {
+          setFacultyAssignedSubjectTokens([]);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setFacultyAssignedSubjectTokens([]);
+      });
+    return () => { cancelled = true; };
+  }, [facultyId]);
+
+  useEffect(() => {
+    if (facultyId == null || activeTab !== 'profile') return;
+    authFetch(apiUrl(`/api/users/${facultyId}/`))
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        setApiProfile(data);
+        if (data && Array.isArray(data.subjects)) {
+          setFacultyAssignedSubjectTokens(data.subjects.map((x: unknown) => String(x).trim()).filter(Boolean));
+        }
+      })
+      .catch(() => setApiProfile(null));
+  }, [facultyId, activeTab]);
+
+  useEffect(() => {
+    if (apiProfile) {
+      setProfileEditForm({
+        full_name: apiProfile.full_name || '',
+        phone: apiProfile.phone || '',
+        username: apiProfile.username || '',
+        email: apiProfile.email || user?.email || '',
+      });
+    }
+  }, [apiProfile, user?.email]);
+
+  // Load defaulters data for faculty dashboard
+  useEffect(() => {
+    if ((activeTab !== 'dashboard' && activeTab !== 'defaulters') || facultyDeptCodes.length === 0) return;
+    
+    const loadDefaulters = async () => {
+      try {
+        const [studentsRes, attRes] = await Promise.all([
+          authFetch(apiUrl('/api/users/?role=student')),
+          authFetch(apiUrl('/api/attendance/')),
+        ]);
+        
+        const studentsList = studentsRes.ok ? await studentsRes.json() : [];
+        const attData = attRes.ok ? await attRes.json() : { records: [] };
+        const records = Array.isArray(attData.records) ? attData.records : [];
+        
+        // Filter students by faculty's assigned departments and sections
+        const facultyScopedStudents = studentsList.filter((s: { department: string | null; section: string | null; sections?: string[] }) => {
+          // Check if student is in faculty's departments
+          const inDept = facultyDeptCodes.includes(s.department || '');
+          if (!inDept) return false;
+          
+          // Check if student is in faculty's assigned sections (if any)
+          const facultyDeptSections = user?.faculty_department_sections || [];
+          if (facultyDeptSections.length > 0) {
+            const studentSections = s.section ? [s.section] : [];
+            return facultyDeptSections.some((fds: { department_code: string; section_name: string }) => {
+              return fds.department_code === s.department && studentSections.includes(fds.section_name);
+            });
+          }
+          
+          return true;
+        });
+        
+        const defaultersList = computeFacultyDefaultersList(facultyScopedStudents, records);
+        setFacultyDefaulters(defaultersList);
+      } catch (error) {
+        console.error('Failed to load defaulters:', error);
+        setFacultyDefaulters([]);
+      }
+    };
+    
+    loadDefaulters();
+  }, [activeTab, facultyDeptCodes.join(','), user?.faculty_department_sections]);
+
+  const handleSaveProfile = async () => {
+    if (facultyId == null) return;
+    try {
+      const res = await fetch(apiUrl(`/api/users/${facultyId}/`), {
+        method: 'PATCH',
+        body: JSON.stringify({
+          full_name: profileEditForm.full_name,
+          phone: profileEditForm.phone,
+          username: profileEditForm.username || undefined,
+          email: profileEditForm.email.trim() || undefined,
+        }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setApiProfile((prev) => (prev ? { ...prev, ...updated } : null));
+        updateSessionUser({
+          email: typeof updated.email === 'string' ? updated.email : profileEditForm.email.trim(),
+          name: typeof updated.full_name === 'string' ? updated.full_name : profileEditForm.full_name,
+        });
+        setProfileEditOpen(false);
+        toast({ title: 'Profile updated', description: 'Your details have been saved.' });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        const msg = typeof err.detail === 'string' ? err.detail : 'Please try again.';
+        toast({ title: 'Update failed', description: msg, variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Update failed', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  // QR Attendance Handlers
+  const handleStartQrSession = async () => {
+    if (!qrSessionForm.subject) {
+      toast({ title: 'Validation Error', description: 'Please select a subject.', variant: 'destructive' });
+      return;
+    }
+
+    try {
+      const payload: any = {
+        subject: qrSessionForm.subject,
+        duration_minutes: qrSessionForm.duration_hours * 60
+      };
+      
+      console.log('Starting QR session with payload:', payload);
+      
+      const res = await authFetch(apiUrl('/api/qr-attendance/sessions/'), {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+
+      console.log('Response status:', res.status);
+      const responseText = await res.text();
+      console.log('Response text:', responseText);
+
+      if (res.ok) {
+        const session = JSON.parse(responseText);
+        setQrSessionDialogOpen(false);
+        setQrSessionForm({
+          subject: '',
+          duration_hours: 1
+        });
+        handleActivateQrSession(session.id);
+        toast({ title: 'Session Started', description: 'QR attendance session is now active.' });
+      } else {
+        let err: any = {};
+        try {
+          err = JSON.parse(responseText);
+        } catch {
+          err = { detail: responseText };
+        }
+        console.error('Error response:', err);
+        toast({ title: 'Error', description: err.detail || 'Failed to start session.', variant: 'destructive' });
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleActivateQrSession = async (sessionId: number) => {
+    try {
+      const res = await authFetch(apiUrl(`/api/qr-attendance/sessions/${sessionId}/`));
+
+      if (res.ok) {
+        const session = await res.json();
+        setActiveQrSession(session);
+        setQrCodeImage(session.qr_code_image);
+        
+        // Use custom_session_id from backend (rotating session ID)
+        // If custom_session_id is not available, fall back to formatted database ID
+        const currentSessionId = session.custom_session_id || formatSessionId(session.id);
+        setDisplaySessionId(currentSessionId);
+        console.log('Session ID set to:', currentSessionId, '(custom:' + session.custom_session_id + ', db:' + formatSessionId(session.id) + ')');
+
+        // Start QR refresh interval - this will also update session ID from backend
+        if (qrRefreshInterval) {
+          clearInterval(qrRefreshInterval);
+        }
+        
+        const interval = setInterval(async () => {
+          try {
+            const refreshRes = await authFetch(apiUrl(`/api/qr-attendance/sessions/${sessionId}/`));
+            if (refreshRes.ok) {
+              const refreshedSession = await refreshRes.json();
+              if (refreshedSession.qr_code_image) {
+                setQrCodeImage(refreshedSession.qr_code_image);
+              }
+              // Update session ID from backend (backend handles rotation)
+              if (refreshedSession.custom_session_id) {
+                setDisplaySessionId(refreshedSession.custom_session_id);
+                console.log('Session ID updated from backend:', refreshedSession.custom_session_id);
+              }
+              if (!refreshedSession.is_active || refreshedSession.is_expired) {
+                clearInterval(interval);
+                setActiveQrSession(null);
+                setQrCodeImage(null);
+                loadQrSessions();
+              }
+            }
+          } catch (error) {
+            console.error('Error refreshing QR:', error);
+          }
+        }, 3000); // Refresh every 3 seconds to catch session ID changes
+        
+        setQrRefreshInterval(interval);
+      } else {
+        toast({ title: 'Error', description: 'Failed to load session.', variant: 'destructive' });
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleCloseQrSession = async () => {
+    if (!activeQrSession) return;
+
+    try {
+      const res = await authFetch(apiUrl(`/api/qr-attendance/sessions/${activeQrSession.id}/`), {
+        method: 'PATCH',
+        body: JSON.stringify({ is_active: false })
+      });
+
+      if (res.ok) {
+        if (qrRefreshInterval) {
+          clearInterval(qrRefreshInterval);
+          setQrRefreshInterval(null);
+        }
+        setActiveQrSession(null);
+        setQrCodeImage(null);
+        loadQrSessions();
+        toast({ title: 'Session Closed', description: 'Attendance session has been closed.' });
+      } else {
+        toast({ title: 'Error', description: 'Failed to close session.', variant: 'destructive' });
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleViewQrRecords = async () => {
+    if (!activeQrSession) return;
+
+    try {
+      const res = await authFetch(apiUrl(`/api/qr-attendance/sessions/${activeQrSession.id}/records/`));
+
+      if (res.ok) {
+        const records = await res.json();
+        setQrAttendanceRecords(records);
+        setViewingQrRecords(true);
+      } else {
+        toast({ title: 'Error', description: 'Failed to load records.', variant: 'destructive' });
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const handleDeleteQrSession = async (sessionId: number) => {
+    if (!confirm('Are you sure you want to delete this session? This action cannot be undone.')) {
+      return;
+    }
+
+    try {
+      const res = await authFetch(apiUrl(`/api/qr-attendance/sessions/${sessionId}/`), {
+        method: 'DELETE',
+      });
+
+      if (res.ok) {
+        // Clear active session if it was the deleted one
+        if (activeQrSession && activeQrSession.id === sessionId) {
+          if (qrRefreshInterval) {
+            clearInterval(qrRefreshInterval);
+            setQrRefreshInterval(null);
+          }
+          setActiveQrSession(null);
+          setQrCodeImage(null);
+        }
+        loadQrSessions();
+        toast({ title: 'Session Deleted', description: 'QR attendance session has been deleted.' });
+      } else {
+        toast({ title: 'Error', description: 'Failed to delete session.', variant: 'destructive' });
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  const loadQrSessions = async () => {
+    try {
+      const res = await authFetch(apiUrl('/api/qr-attendance/sessions/'));
+
+      if (res.ok) {
+        const sessions = await res.json();
+        setQrSessions(sessions);
+      }
+    } catch (error) {
+      console.error('Error loading QR sessions:', error);
+    }
+  };
+
+  // Load QR sessions when tab becomes active
+  useEffect(() => {
+    if (activeTab === 'qr-attendance') {
+      loadQrSessions();
+    }
+  }, [activeTab]);
+
+  // Cleanup intervals on unmount
+  useEffect(() => {
+    return () => {
+      if (qrRefreshInterval) {
+        clearInterval(qrRefreshInterval);
+      }
+    };
+  }, [qrRefreshInterval]);
+
+  const handleFacultyChangePassword = async () => {
+    if (facultyId == null) return;
+    if (changePasswordForm.new_password !== changePasswordForm.confirm_password) {
+      toast({ title: 'Passwords do not match', description: 'New password and confirm must match.', variant: 'destructive' });
+      return;
+    }
+    if (changePasswordForm.new_password.length < 1) {
+      toast({ title: 'Invalid password', description: 'Enter a new password.', variant: 'destructive' });
+      return;
+    }
+    try {
+      const res = await fetch(apiUrl(`/api/users/${facultyId}/`), {
+        method: 'PATCH',
+        body: JSON.stringify({
+          current_password: changePasswordForm.current_password,
+          new_password: changePasswordForm.new_password
+        })
+      });
+      if (res.ok) {
+        setChangePasswordOpen(false);
+        setChangePasswordForm({ current_password: '', new_password: '', confirm_password: '' });
+        toast({ title: 'Password changed', description: 'Your password has been updated.' });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        const msg = err.current_password?.[0] || err.detail || 'Failed to change password.';
+        toast({ title: 'Password change failed', description: String(msg), variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Password change failed', description: 'Network error.', variant: 'destructive' });
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-dashboard-bg">
+      {/* Header */}
+      <header className="sticky top-0 z-50 border-b border-border/60 bg-white/95 backdrop-blur-md shadow-soft">
+        <div className="px-4 sm:px-6 py-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="flex items-center space-x-4">
+            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/25">
+              <GraduationCap className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h1 className="text-xl font-extrabold text-foreground">{user?.name || 'Faculty'}</h1>
+              <p className="text-sm text-muted-foreground">Welcome back</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <Button variant="outline" onClick={() => setChangePasswordOpen(true)} className="rounded-xl flex-1 sm:flex-none">
+              <Lock className="w-4 h-4 mr-2" />
+              Change password
+            </Button>
+            <Button variant="outline" onClick={logout} className="rounded-xl flex-1 sm:flex-none">
+              <LogOut className="w-4 h-4 mr-2" />
+              Logout
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      <div className="p-4 sm:p-6">
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList className="mb-6 flex flex-wrap gap-1.5 h-auto p-1.5 rounded-xl bg-muted/80">
+            <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
+            <TabsTrigger value="attendance" disabled={isFacultyAttendanceFrozen}>Mark Attendance</TabsTrigger>
+            <TabsTrigger value="qr-attendance" disabled={isFacultyAttendanceFrozen}>QR Attendance</TabsTrigger>
+            <TabsTrigger value="student-attendance" disabled={isFacultyAttendanceFrozen}>Student Attendance</TabsTrigger>
+            <TabsTrigger value="reports" disabled={isFacultyAttendanceFrozen}>My Reports</TabsTrigger>
+            <TabsTrigger value="subjects">My Subjects</TabsTrigger>
+            <TabsTrigger value="defaulters">Defaulters</TabsTrigger>
+            <TabsTrigger value="profile">Profile</TabsTrigger>
+          </TabsList>
+
+          {/* Dashboard — scoped to your branch(es), aligned with admin portal layout */}
+          <TabsContent value="dashboard" className="space-y-6 mt-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+              <Card className="overflow-hidden transition-all duration-300 hover:shadow-card-hover border-blue-200/50">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">My students</CardTitle>
+                  <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center">
+                    <Users className="h-5 w-5 text-blue-600" />
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">{studentsLoading ? '…' : facultyScopedStudents.length}</div>
+                  <p className="text-xs text-muted-foreground">In your assigned branch(es)</p>
+                </CardContent>
+              </Card>
+
+              <Card className="overflow-hidden transition-all duration-300 hover:shadow-card-hover border-sky-200/50">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">My subjects</CardTitle>
+                  <div className="w-10 h-10 rounded-xl bg-sky-100 flex items-center justify-center">
+                    <BookOpen className="h-5 w-5 text-sky-600" />
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">{subjectsAll.length}</div>
+                  <p className="text-xs text-muted-foreground">Across your departments</p>
+                </CardContent>
+              </Card>
+
+              <Card className="overflow-hidden transition-all duration-300 hover:shadow-card-hover border-indigo-200/50">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Attendance (your scope)</CardTitle>
+                  <div className="w-10 h-10 rounded-xl bg-indigo-100 flex items-center justify-center">
+                    <TrendingUp className="h-5 w-5 text-indigo-600" />
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">
+                    {facultyDashboardMetrics.totalHours > 0 ? `${facultyDashboardMetrics.attendancePercentage}%` : '—'}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {facultyDashboardMetrics.totalHours > 0 ? (
+                      <>
+                        {facultyDashboardMetrics.attendedHours} / {facultyDashboardMetrics.totalHours} classes ·{' '}
+                        {facultyDashboardMetrics.attendedDays} / {facultyDashboardMetrics.totalDays} days
+                      </>
+                    ) : (
+                      'No attendance data yet for your students'
+                    )}
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button className="rounded-xl" onClick={() => setActiveTab('attendance')}>
+                <CalendarIcon className="w-4 h-4 mr-2" />
+                Mark attendance
+              </Button>
+              <Button variant="outline" className="rounded-xl" onClick={() => setActiveTab('student-attendance')}>
+                <Users className="w-4 h-4 mr-2" />
+                Student attendance table
+              </Button>
+              <Button variant="outline" className="rounded-xl" onClick={() => setActiveTab('reports')}>
+                <FileDown className="w-4 h-4 mr-2" />
+                Reports & upload
+              </Button>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Weekly attendance trend</CardTitle>
+                  <CardDescription>Average attendance % by weekday (your students only)</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {facultyScopedRecords.length === 0 ? (
+                    <div className="flex items-center justify-center h-[300px] text-muted-foreground">No trend data yet</div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height={300}>
+                      <BarChart data={facultyWeeklyTrend}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="name" />
+                        <YAxis />
+                        <Tooltip />
+                        <Bar dataKey="attendance" fill="hsl(217 91% 52%)" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Attendance distribution</CardTitle>
+                  <CardDescription>Share of your students by attendance band</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {facultyDistributionPie.length === 0 || facultyScopedStudents.length === 0 ? (
+                    <div className="flex items-center justify-center h-[300px] text-muted-foreground">No distribution data yet</div>
+                  ) : (
+                    <>
+                      <ResponsiveContainer width="100%" height={300}>
+                        <PieChart>
+                          <Pie
+                            data={facultyDistributionPie}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={60}
+                            outerRadius={120}
+                            paddingAngle={5}
+                            dataKey="value"
+                          >
+                            {facultyDistributionPie.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={entry.color} />
+                            ))}
+                          </Pie>
+                          <Tooltip />
+                        </PieChart>
+                      </ResponsiveContainer>
+                      <div className="mt-4 space-y-2">
+                        {facultyDistributionPie.map((item, index) => (
+                          <div key={index} className="flex items-center justify-between text-sm">
+                            <div className="flex items-center">
+                              <div className="w-3 h-3 rounded-full mr-2" style={{ backgroundColor: item.color }} />
+                              {item.name}
+                            </div>
+                            <span className="font-medium">{item.value}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          {/* Attendance Tab */}
+          <TabsContent value="attendance" className="space-y-6 mt-6">
+            {isFacultyAttendanceFrozen && (
+              <Card className="border-destructive/50 bg-destructive/5">
+                <CardContent className="pt-6 text-sm">
+                  Admin has frozen the faculty attendance portal. Marking and uploading attendance are temporarily disabled.
+                </CardContent>
+              </Card>
+            )}
+            {/* Controls */}
+            <Card className="border-emerald-200/50">
+              <CardHeader>
+                <CardTitle>Mark Attendance</CardTitle>
+                <CardDescription>Students are listed by your branch and selected year & section. Select branch, date, year, semester, subject, and section.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Branch</label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal">
+                          {selectedBranches.includes('__all__')
+                            ? 'All branches'
+                            : selectedBranches.length > 0
+                              ? `${selectedBranches.length} selected`
+                              : 'Select branch(es)'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-72 p-3">
+                        <div className="space-y-2">
+                          <div className="flex items-center space-x-2">
+                            <Checkbox
+                              id="branch-all"
+                              checked={selectedBranches.includes('__all__')}
+                              onCheckedChange={(checked) => {
+                                if (checked) {
+                                  setSelectedBranches(['__all__']);
+                                } else {
+                                  setSelectedBranches([]);
+                                }
+                                setSelectedSubjects([]);
+                              }}
+                            />
+                            <label htmlFor="branch-all" className="text-sm font-medium cursor-pointer">All branches</label>
+                          </div>
+                          {facultyBranchOptions.map((d: { id: number; code: string; name: string }) => (
+                            <div key={d.id} className="flex items-center space-x-2">
+                              <Checkbox
+                                id={`branch-${d.id}`}
+                                checked={selectedBranches.includes('__all__') || selectedBranches.includes(d.code)}
+                                onCheckedChange={(checked) => {
+                                  const current = selectedBranches.includes('__all__') ? [] : selectedBranches;
+                                  const next = checked
+                                    ? [...current, d.code]
+                                    : current.filter((v) => v !== d.code);
+                                  setSelectedBranches(next);
+                                  setSelectedSubjects([]);
+                                }}
+                              />
+                              <label htmlFor={`branch-${d.id}`} className="text-sm cursor-pointer">
+                                {d.code} – {d.name}
+                              </label>
+                            </div>
+                          ))}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Date</label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          className={cn(
+                            'w-full justify-start text-left font-normal',
+                            !selectedDate && 'text-muted-foreground'
+                          )}
+                        >
+                          <CalendarIcon className="mr-2 h-4 w-4" />
+                          {selectedDate ? format(selectedDate, 'PPP') : 'Pick a date'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0">
+                        <Calendar
+                          mode="single"
+                          selected={selectedDate}
+                          onSelect={(date) => date && setSelectedDate(date)}
+                          disabled={(date) => date > todayForAttendance}
+                          initialFocus
+                          className="p-3 pointer-events-auto"
+                        />
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Year</label>
+                    <Select value={selectedYear || '__all__'} onValueChange={setSelectedYear}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="All years" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__all__">All years</SelectItem>
+                        <SelectItem value="1">Year 1</SelectItem>
+                        <SelectItem value="2">Year 2</SelectItem>
+                        <SelectItem value="3">Year 3</SelectItem>
+                        <SelectItem value="4">Year 4</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Semester</label>
+                    <Select value={selectedSemester || '__all__'} onValueChange={setSelectedSemester}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="All semesters" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__all__">All semesters</SelectItem>
+                        <SelectItem value="1">Sem 1</SelectItem>
+                        <SelectItem value="2">Sem 2</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Subject</label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal">
+                          {selectedSubjects.length > 0 ? `${selectedSubjects.length} selected` : 'Select subject(s)'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-80 p-3 max-h-72 overflow-y-auto">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setSelectedSubjects(subjects.map(s => String(s.id)))}>Select all</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setSelectedSubjects([])}>Clear all</Button>
+                          </div>
+                        </div>
+                        {subjects.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">
+                            {facultyDeptCodes.length === 0 ? 'No departments assigned / log in again' : 'No subjects for selected branch(es).'}
+                          </p>
+                        ) : (
+                          <div className="space-y-2">
+                            {subjects.map((subject: { id: string | number; name: string; code: string }) => {
+                              const id = String(subject.id);
+                              return (
+                                <div key={id} className="flex items-center space-x-2">
+                                  <Checkbox
+                                    id={`subject-${id}`}
+                                    checked={selectedSubjects.includes(id)}
+                                    onCheckedChange={(checked) => {
+                                      const next = checked
+                                        ? [...selectedSubjects, id]
+                                        : selectedSubjects.filter((v) => v !== id);
+                                      setSelectedSubjects(next);
+                                    }}
+                                  />
+                                  <label htmlFor={`subject-${id}`} className="text-sm cursor-pointer">
+                                    {subject.name} ({subject.code})
+                                  </label>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Section</label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal">
+                          {selectedSections.length > 0 ? `${selectedSections.length} selected` : 'Select section(s)'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-64 p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setSelectedSections((apiSections || []).map(s => s.name))}>Select all</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setSelectedSections([])}>Clear all</Button>
+                          </div>
+                        </div>
+                        {(apiSections || []).length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No sections – add in Admin</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {(apiSections || []).map((s: { id: number; name: string }) => (
+                              <div key={s.id} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`section-${s.id}`}
+                                  checked={selectedSections.includes(s.name)}
+                                  onCheckedChange={(checked) => {
+                                    const next = checked
+                                      ? [...selectedSections, s.name]
+                                      : selectedSections.filter((v) => v !== s.name);
+                                    setSelectedSections(next);
+                                  }}
+                                />
+                                <label htmlFor={`section-${s.id}`} className="text-sm cursor-pointer">{s.name}</label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Total hours (this class)</label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={24}
+                      value={sessionTotalHours}
+                      onChange={e => {
+                        const v = parseInt(e.target.value, 10);
+                        if (!isNaN(v) && v >= 1 && v <= 24) {
+                          setSessionTotalHours(v);
+                          setAttendanceData(prev => {
+                            const next = { ...prev };
+                            studentsInSection.forEach(s => {
+                              const current = next[s.id] ?? 0;
+                              next[s.id] = Math.min(current, v);
+                            });
+                            return next;
+                          });
+                        }
+                      }}
+                      className="w-20"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Quick Actions</label>
+                    <div className="flex gap-2">
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => handleSelectAll(true)}
+                        className="flex-1"
+                      >
+                        All Present ({sessionTotalHours} hr)
+                      </Button>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => handleSelectAll(false)}
+                        className="flex-1"
+                      >
+                        All Absent
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Stats */}
+                {studentsInSection.length > 0 && (
+                  <div className="grid grid-cols-3 gap-4 mb-6">
+                    <div className="text-center p-4 bg-primary/10 rounded-lg">
+                      <div className="text-2xl font-bold text-primary">{stats.totalStudents}</div>
+                      <div className="text-sm text-muted-foreground">Total Students</div>
+                    </div>
+                    <div className="text-center p-4 bg-success/10 rounded-lg">
+                      <div className="text-2xl font-bold text-success">{stats.presentCount}</div>
+                      <div className="text-sm text-muted-foreground">Present</div>
+                    </div>
+                    <div className="text-center p-4 bg-destructive/10 rounded-lg">
+                      <div className="text-2xl font-bold text-destructive">{stats.absentCount}</div>
+                      <div className="text-sm text-muted-foreground">Absent</div>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Student List */}
+            {selectedSubjects.length > 0 && selectedSections.length > 0 && (
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between">
+                  <div>
+                    <CardTitle>Students in Sections: {selectedSections.join(', ')}</CardTitle>
+                    <CardDescription>
+                      {selectedSubjectObjs.map(s => s.name).join(', ')} - {format(selectedDate, 'PPP')} · {sessionTotalHours} hour(s)
+                    </CardDescription>
+                  </div>
+                  <Button onClick={handleSaveAttendance} disabled={studentsInSection.length === 0 || isFacultyAttendanceFrozen}>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save Attendance
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  {studentsLoading ? (
+                    <p className="text-muted-foreground">Loading student list…</p>
+                  ) : studentsInSection.length === 0 ? (
+                    <div className="text-center py-8">
+                      <Users className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                      <p className="text-muted-foreground">No students in this section. Students are assigned to class and branch when they register.</p>
+                    </div>
+                  ) : (
+                    <div className="grid gap-2">
+                      {studentsInSection.map((student, index) => {
+                        const attended = attendanceData[student.id] ?? 0;
+                        return (
+                          <div
+                            key={student.id}
+                            className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50 flex-wrap gap-2"
+                          >
+                            <div className="flex items-center space-x-4">
+                              <div className="w-8 h-8 bg-primary/10 rounded-full flex items-center justify-center text-sm font-medium">
+                                {index + 1}
+                              </div>
+                              <div>
+                                <div className="font-medium">{student.name}</div>
+                                <div className="text-sm text-muted-foreground">{student.rollNumber}</div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-4 flex-wrap">
+                              <div className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`present-${student.id}`}
+                                  checked={attended >= sessionTotalHours}
+                                  onCheckedChange={(checked) => 
+                                    handleAttendanceChange(student.id, checked === true)
+                                  }
+                                />
+                                <label 
+                                  htmlFor={`present-${student.id}`}
+                                  className="text-sm font-medium cursor-pointer"
+                                >
+                                  Present
+                                </label>
+                              </div>
+                            
+                              <div className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`absent-${student.id}`}
+                                  checked={attended === 0}
+                                  onCheckedChange={(checked) => 
+                                    handleAttendanceChange(student.id, checked !== true)
+                                  }
+                                />
+                                <label 
+                                  htmlFor={`absent-${student.id}`}
+                                  className="text-sm font-medium cursor-pointer"
+                                >
+                                  Absent
+                                </label>
+                              </div>
+                              {sessionTotalHours > 1 && (
+                                <div className="flex items-center gap-1">
+                                  <label htmlFor={`hr-${student.id}`} className="text-sm text-muted-foreground">Attended (hrs):</label>
+                                  <Input
+                                    id={`hr-${student.id}`}
+                                    type="number"
+                                    min={0}
+                                    max={sessionTotalHours}
+                                    value={attended}
+                                    onChange={e => handleAttendanceHoursChange(student.id, parseFloat(e.target.value) || 0)}
+                                    className="w-16 h-8 text-center"
+                                  />
+                                  <span className="text-sm text-muted-foreground">/ {sessionTotalHours}</span>
+                                </div>
+                              )}
+                              <div className="w-8 h-8 flex items-center justify-center">
+                                {attended >= sessionTotalHours && <CheckCircle className="w-5 h-5 text-success" />}
+                                {attended === 0 && <XCircle className="w-5 h-5 text-destructive" />}
+                                {attended > 0 && attended < sessionTotalHours && <Clock className="w-5 h-5 text-muted-foreground" />}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          {/* QR Attendance Tab */}
+          <TabsContent value="qr-attendance" className="space-y-6 mt-6">
+            <Card>
+              <CardHeader className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                <div>
+                  <CardTitle>QR Attendance</CardTitle>
+                  <CardDescription>Start QR-based attendance sessions for quick student check-in</CardDescription>
+                </div>
+                <Button onClick={() => setQrSessionDialogOpen(true)}>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Start New Session
+                </Button>
+              </CardHeader>
+              <CardContent>
+                {activeQrSession ? (
+                  <div className="space-y-6">
+                    {/* Active Session Display */}
+                    <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-6">
+                      <div className="flex items-center justify-between mb-4">
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => setActiveQrSession(null)}
+                        >
+                          ← Back to Sessions
+                        </Button>
+                        <h3 className="text-lg font-semibold">Active Session</h3>
+                        <div className="w-20"></div> {/* Spacer for centering */}
+                      </div>
+                      <div className="flex flex-col md:flex-row gap-6">
+                        <div className="flex-1">
+                          <div className="space-y-2">
+                            <div className="flex justify-between items-center">
+                              <span className="text-sm text-muted-foreground">Session ID:</span>
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-blue-600">
+                                  {hideSessionId ? '•••••' : displaySessionId}
+                                </span>
+                                <Button 
+                                  variant="ghost" 
+                                  size="sm"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(displaySessionId);
+                                    toast({ title: 'Copied', description: 'Session ID copied to clipboard' });
+                                  }}
+                                >
+                                  <FileDown className="w-4 h-4" />
+                                </Button>
+                                <Button 
+                                  variant="ghost" 
+                                  size="sm"
+                                  onClick={() => setHideSessionId(!hideSessionId)}
+                                >
+                                  {hideSessionId ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                                </Button>
+                              </div>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-sm text-muted-foreground">Subject:</span>
+                              <span className="font-medium">{activeQrSession.subject}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-sm text-muted-foreground">Duration:</span>
+                              <span className="font-medium">{activeQrSession.duration_hours} hour(s)</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-sm text-muted-foreground">Attendance Count:</span>
+                              <span className="font-medium text-green-600">{activeQrSession.attendance_count}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex flex-col items-center">
+                          {qrCodeImage ? (
+                            <div className="bg-white p-4 rounded-lg shadow-md">
+                              <img src={qrCodeImage} alt="QR Code" className="w-48 h-48" />
+                            </div>
+                          ) : (
+                            <div className="w-48 h-48 bg-gray-200 rounded-lg flex items-center justify-center">
+                              <span className="text-sm text-muted-foreground">Loading QR...</span>
+                            </div>
+                          )}
+                          <p className="text-xs text-muted-foreground mt-2">QR refreshes every 5 seconds</p>
+                          <Button 
+                            variant="outline" 
+                            size="sm"
+                            className="mt-2"
+                            onClick={() => setQrFullScreenOpen(true)}
+                          >
+                            <Maximize className="w-4 h-4 mr-2" />
+                            Full Screen
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="mt-4 flex gap-2">
+                        <Button 
+                          variant="destructive" 
+                          onClick={handleCloseQrSession}
+                        >
+                          Close Session
+                        </Button>
+                        <Button 
+                          variant="outline"
+                          onClick={handleViewQrRecords}
+                        >
+                          View Records
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {qrSessions.length === 0 ? (
+                      <div className="text-center py-12">
+                        <p className="text-muted-foreground mb-4">No QR attendance sessions found</p>
+                        <Button onClick={() => setQrSessionDialogOpen(true)}>
+                          <Plus className="w-4 h-4 mr-2" />
+                          Start First Session
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="border rounded-lg overflow-hidden">
+                        <table className="w-full">
+                          <thead className="bg-muted">
+                            <tr>
+                              <th className="px-4 py-2 text-left text-sm font-medium">Session ID</th>
+                              <th className="px-4 py-2 text-left text-sm font-medium">Subject</th>
+                              <th className="px-4 py-2 text-left text-sm font-medium">Duration (hours)</th>
+                              <th className="px-4 py-2 text-left text-sm font-medium">Attendance</th>
+                              <th className="px-4 py-2 text-left text-sm font-medium">Status</th>
+                              <th className="px-4 py-2 text-left text-sm font-medium">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {qrSessions.map((session: any) => (
+                              <tr key={session.id} className="border-t hover:bg-muted/50">
+                                <td className="px-4 py-2 text-sm font-medium text-blue-600">
+                                {formatSessionId(session.id)}
+                              </td>
+                                <td className="px-4 py-2 text-sm">{session.subject}</td>
+                                <td className="px-4 py-2 text-sm">{session.duration_hours} hour(s)</td>
+                                <td className="px-4 py-2 text-sm">{session.attendance_count}</td>
+                                <td className="px-4 py-2 text-sm">
+                                  <Badge variant={session.is_active ? 'default' : 'secondary'}>
+                                    {session.is_active ? 'Active' : 'Closed'}
+                                  </Badge>
+                                </td>
+                                <td className="px-4 py-2 text-sm">
+                                  <div className="flex gap-2">
+                                    {session.is_active && (
+                                      <Button 
+                                        variant="outline" 
+                                        size="sm"
+                                        onClick={() => handleActivateQrSession(session.id)}
+                                      >
+                                        View
+                                      </Button>
+                                    )}
+                                    <Button 
+                                      variant="destructive" 
+                                      size="sm"
+                                      onClick={() => handleDeleteQrSession(session.id)}
+                                    >
+                                      Delete
+                                    </Button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* QR Attendance Records Dialog */}
+            {viewingQrRecords && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Button 
+                        variant="ghost" 
+                        size="sm"
+                        onClick={() => setViewingQrRecords(false)}
+                        className="mb-2"
+                      >
+                        ← Back to Session
+                      </Button>
+                      <CardTitle>Attendance Records</CardTitle>
+                      <CardDescription>Students who marked attendance via QR</CardDescription>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {qrAttendanceRecords.length > 0 ? (
+                    <div className="border rounded-lg overflow-hidden">
+                      <table className="w-full">
+                        <thead className="bg-muted">
+                          <tr>
+                            <th className="px-4 py-2 text-left text-sm font-medium">Name</th>
+                            <th className="px-4 py-2 text-left text-sm font-medium">Roll Number</th>
+                            <th className="px-4 py-2 text-left text-sm font-medium">Section</th>
+                            <th className="px-4 py-2 text-left text-sm font-medium">Scanned At</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {qrAttendanceRecords.map((record) => (
+                            <tr key={record.id} className="border-t hover:bg-muted/50">
+                              <td className="px-4 py-2 text-sm">{record.student_name}</td>
+                              <td className="px-4 py-2 text-sm">{record.student_roll_number}</td>
+                              <td className="px-4 py-2 text-sm">{record.student_section}</td>
+                              <td className="px-4 py-2 text-sm">{new Date(record.scanned_at).toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="text-center py-8">
+                      <p className="text-muted-foreground">No attendance records yet</p>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          {/* Student Attendance: subject-wise and overall % */}
+          <TabsContent value="student-attendance" className="space-y-6">
+            {isFacultyAttendanceFrozen && (
+              <Card className="border-destructive/50 bg-destructive/5">
+                <CardContent className="pt-6 text-sm">
+                  Admin has frozen the faculty attendance portal. Student attendance data is temporarily unavailable.
+                </CardContent>
+              </Card>
+            )}
+            <Card>
+              <CardHeader>
+                <CardTitle>Student Attendance by Subject</CardTitle>
+                <CardDescription>
+                  Select branch, year, section, and at least one subject. The table stays hidden until all of these are set. Overall % uses only the subjects you selected.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="space-y-2">
+                    <Label>Branch</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal rounded-xl">
+                          {satSelectedBranches.length === 0
+                            ? 'Select branch(es)'
+                            : satSelectedBranches.includes('__all__')
+                              ? 'All branches'
+                              : `${satSelectedBranches.filter((b) => b !== '__all__').length} selected`}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-72 p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => { setSatSelectedBranches(['__all__']); setSatSubjectFilterIds(null); }}>All</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => { setSatSelectedBranches([]); setSatSubjectFilterIds(null); }}>Clear</Button>
+                          </div>
+                        </div>
+                        <div className="flex items-center space-x-2 mb-2">
+                          <Checkbox
+                            id="sat-branch-all"
+                            checked={satSelectedBranches.includes('__all__')}
+                            onCheckedChange={(c) => {
+                              if (c) setSatSelectedBranches(['__all__']);
+                              else setSatSelectedBranches([]);
+                              setSatSubjectFilterIds(null);
+                            }}
+                          />
+                          <label htmlFor="sat-branch-all" className="text-sm font-medium cursor-pointer">All branches</label>
+                        </div>
+                        {facultyBranchOptions.map((d: { id: number; code: string; name: string }) => (
+                          <div key={d.id} className="flex items-center space-x-2">
+                            <Checkbox
+                              id={`sat-branch-${d.id}`}
+                              checked={satSelectedBranches.includes('__all__') || satSelectedBranches.includes(d.code)}
+                              onCheckedChange={(checked) => {
+                                const current = satSelectedBranches.includes('__all__') ? [] : satSelectedBranches.filter((b) => b !== '__all__');
+                                const next = checked ? [...current, d.code] : current.filter((v) => v !== d.code);
+                                setSatSelectedBranches(next);
+                                setSatSubjectFilterIds(null);
+                              }}
+                            />
+                            <label htmlFor={`sat-branch-${d.id}`} className="text-sm cursor-pointer">{d.code} – {d.name}</label>
+                          </div>
+                        ))}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Year</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal rounded-xl">
+                          {satSelectedYears.length === 0 ? 'Select year(s)' : `${satSelectedYears.length} selected`}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-56 p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => { setSatSelectedYears([...SAT_YEAR_OPTIONS]); setSatSubjectFilterIds(null); }}>All</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => { setSatSelectedYears([]); setSatSubjectFilterIds(null); }}>Clear</Button>
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          {SAT_YEAR_OPTIONS.map((y) => (
+                            <div key={y} className="flex items-center space-x-2">
+                              <Checkbox
+                                id={`sat-year-${y}`}
+                                checked={satSelectedYears.includes(y)}
+                                onCheckedChange={(checked) => {
+                                  setSatSelectedYears((prev) => {
+                                    const next = checked ? [...prev, y] : prev.filter((v) => v !== y);
+                                    return next;
+                                  });
+                                  setSatSubjectFilterIds(null);
+                                }}
+                              />
+                              <label htmlFor={`sat-year-${y}`} className="text-sm cursor-pointer">Year {y}</label>
+                            </div>
+                          ))}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Section</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal rounded-xl">
+                          {satSelectedSections.length === 0 ? 'Select section(s)' : `${satSelectedSections.length} selected`}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-64 p-3 max-h-72 overflow-y-auto">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setSatSelectedSections((apiSections || []).map((s) => s.name))}>All</Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setSatSelectedSections([])}>Clear</Button>
+                          </div>
+                        </div>
+                        {(apiSections || []).length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No sections defined.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {(apiSections || []).map((s: { id: number; name: string }) => (
+                              <div key={s.id} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`sat-sec-${s.id}`}
+                                  checked={satSelectedSections.includes(s.name)}
+                                  onCheckedChange={(checked) => {
+                                    setSatSelectedSections((prev) =>
+                                      checked ? [...prev, s.name] : prev.filter((v) => v !== s.name),
+                                    );
+                                    setSatSubjectFilterIds(null);
+                                  }}
+                                />
+                                <label htmlFor={`sat-sec-${s.id}`} className="text-sm cursor-pointer">{s.name}</label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Subject</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start text-left font-normal rounded-xl">
+                          {satSubjectFilterIds === null || satSubjectFilterIds.length === 0
+                            ? 'Select subject(s)'
+                            : `${satSubjectFilterIds.length} selected`}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-80 p-3 max-h-72 overflow-y-auto">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs text-muted-foreground">Quick actions</span>
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2"
+                              onClick={() => setSatSubjectFilterIds(satSubjectOptions.map((s) => String(s.id)))}
+                            >
+                              All
+                            </Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setSatSubjectFilterIds(null)}>Clear</Button>
+                          </div>
+                        </div>
+                        {satSubjectOptions.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">
+                            {satBranchCodes.length === 0 || satSelectedYears.length === 0
+                              ? 'Choose branch and year first.'
+                              : 'No assigned subjects match these filters.'}
+                          </p>
+                        ) : (
+                          <div className="space-y-2">
+                            {satSubjectOptions.map((subject) => {
+                              const id = String(subject.id);
+                              const isAllMode = satSubjectFilterIds === null;
+                              const checked = !isAllMode && satSubjectFilterIds.includes(id);
+                              return (
+                                <div key={id} className="flex items-center space-x-2">
+                                  <Checkbox
+                                    id={`sat-subj-${id}`}
+                                    checked={checked}
+                                    onCheckedChange={(isChecked) => {
+                                      if (satSubjectFilterIds === null) {
+                                        if (isChecked) setSatSubjectFilterIds([id]);
+                                        return;
+                                      }
+                                      if (isChecked) {
+                                        setSatSubjectFilterIds([...satSubjectFilterIds, id]);
+                                      } else {
+                                        const next = satSubjectFilterIds.filter((v) => v !== id);
+                                        setSatSubjectFilterIds(next.length === 0 ? null : next);
+                                      }
+                                    }}
+                                  />
+                                  <label htmlFor={`sat-subj-${id}`} className="text-sm cursor-pointer">
+                                    {subject.name} ({subject.code})
+                                  </label>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </div>
+
+                {!satAttendanceViewReady ? (
+                  <p className="text-muted-foreground">
+                    Set branch, year, section, and at least one subject above to load the attendance table.
+                  </p>
+                ) : studentsLoading ? (
+                  <p className="text-muted-foreground">Loading students…</p>
+                ) : satStudentsRows.length === 0 ? (
+                  <p className="text-muted-foreground">No students match the selected filters.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left p-2 font-medium">Student</th>
+                          <th className="text-left p-2 font-medium">Roll No</th>
+                          {satSubjectsForColumns.map((sub: { id: string | number; code: string }) => (
+                            <th key={String(sub.id)} className="text-left p-2 font-medium">{sub.code} %</th>
+                          ))}
+                          <th className="text-left p-2 font-medium">Overall %</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {satStudentsRows.map((student) => {
+                          const sid = Number(student.id) || student.id;
+                          const bySubject: Record<string, { present: number; total: number }> = {};
+                          satSubjectsForColumns.forEach((sub: { code: string }) => {
+                            bySubject[sub.code] = { present: 0, total: 0 };
+                          });
+                          let totalAll = 0;
+                          let presentAll = 0;
+                          attendanceRecords.filter((r) => String(r.student) === String(sid)).forEach((r) => {
+                            const present = r.status?.toLowerCase() === 'present';
+                            const rSub = (r.subject ?? '').trim();
+                            const match = satSubjectsForColumns.find(
+                              (sub: { code: string; name?: string }) =>
+                                sub.code === rSub ||
+                                sub.name === rSub ||
+                                String(sub.code).toLowerCase() === rSub.toLowerCase() ||
+                                String(sub.name ?? '').toLowerCase() === rSub.toLowerCase(),
+                            );
+                            if (match && bySubject[match.code]) {
+                              bySubject[match.code].total++;
+                              if (present) bySubject[match.code].present++;
+                              totalAll++;
+                              if (present) presentAll++;
+                            }
+                          });
+                          return (
+                            <tr key={student.id} className="border-b">
+                              <td className="p-2">{student.name}</td>
+                              <td className="p-2 font-mono">{student.rollNumber}</td>
+                              {satSubjectsForColumns.map((sub: { id: string | number; code: string }) => {
+                                const s = bySubject[sub.code];
+                                const pct = s && s.total > 0 ? Math.round((s.present / s.total) * 100) : '–';
+                                return <td key={String(sub.id)} className="p-2">{pct}</td>;
+                              })}
+                              <td className="p-2 font-medium">{totalAll > 0 ? Math.round((presentAll / totalAll) * 100) : '–'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Reports Tab */}
+          <TabsContent value="reports">
+            {isFacultyAttendanceFrozen && (
+              <Card className="border-destructive/50 bg-destructive/5 mb-6">
+                <CardContent className="pt-6 text-sm">
+                  Admin has frozen the faculty attendance portal. Attendance uploads are temporarily disabled.
+                </CardContent>
+              </Card>
+            )}
+            <Card>
+              <CardHeader>
+                <CardTitle>Attendance Reports</CardTitle>
+                <CardDescription>Download reports for your subjects</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Button variant="outline" className="h-auto p-4 flex-col" onClick={handleDownloadSubjectWise}>
+                    <Download className="w-8 h-8 mb-2" />
+                    <div className="text-center">
+                      <div className="font-medium">Subject-wise Report</div>
+                      <div className="text-sm text-muted-foreground">CSV: one row per student per subject with total attended and scheduled hours</div>
+                    </div>
+                  </Button>
+                  
+                  <Button variant="outline" className="h-auto p-4 flex-col" onClick={handleDownloadSectionWise}>
+                    <Download className="w-8 h-8 mb-2" />
+                    <div className="text-center">
+                      <div className="font-medium">Section-wise Report</div>
+                      <div className="text-sm text-muted-foreground">Same columns, sorted by section (CSV)</div>
+                    </div>
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="mt-6">
+              <CardHeader>
+                <CardTitle>Bulk Attendance Upload</CardTitle>
+                <CardDescription>
+                  Required: <code>roll_number</code>, <code>subject</code>, and <code>date</code> or <code>dates</code> (comma/semicolon separated). Use <code>attended_hours</code> + <code>total_hours</code> (single or multiple in same order as dates) or <code>status</code>. Duplicates skipped.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  The file is processed on the server. Existing attendance for the same student + subject + date is skipped.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full sm:w-auto"
+                    disabled={isFacultyAttendanceFrozen}
+                    onClick={() =>
+                      downloadSampleExcel('/api/samples/bulk-attendance/', 'sample_bulk_attendance.xlsx')
+                    }
+                  >
+                    <FileDown className="w-4 h-4 mr-2" />
+                    Sample attendance Excel
+                  </Button>
+                  <input
+                    type="file"
+                    accept=".xlsx"
+                    onChange={handleAttendanceUpload}
+                    disabled={isUploadingAttendance || isFacultyAttendanceFrozen}
+                    className="hidden"
+                    id="attendance-bulk-upload"
+                  />
+                  <Button
+                    asChild
+                    variant="outline"
+                    className="w-full sm:w-auto"
+                    disabled={isUploadingAttendance || isFacultyAttendanceFrozen}
+                  >
+                    <label
+                      htmlFor="attendance-bulk-upload"
+                      className="cursor-pointer flex items-center justify-center"
+                    >
+                      {isUploadingAttendance ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                          Uploading attendance...
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-4 h-4 mr-2" />
+                          Upload Attendance Excel
+                        </>
+                      )}
+                    </label>
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Make sure you are logged in as Faculty or Admin. If you are not logged in or use a wrong file
+                  format, an error message will be shown.
+                </p>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Subjects Tab */}
+          <TabsContent value="subjects" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>My Subjects</CardTitle>
+                <CardDescription>Subjects assigned to you</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid gap-4">
+                  {subjectsAll.length === 0 ? (
+                    <div className="py-8 text-center text-muted-foreground">
+                      <BookOpen className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                      <p>No subjects assigned yet.</p>
+                      <p className="text-sm mt-1">Ask your admin to assign subjects in Admin → Manage Faculty → Edit your profile.</p>
+                    </div>
+                  ) : (
+                    subjectsAll.map((subject: { id: string | number; name: string; code: string; credits?: number }) => (
+                      <div key={String(subject.id)} className="flex items-center justify-between p-4 border rounded-lg">
+                        <div className="flex items-center space-x-4">
+                          <BookOpen className="w-8 h-8 text-primary" />
+                          <div>
+                            <div className="font-medium">{subject.name}</div>
+                            <div className="text-sm text-muted-foreground">
+                              Code: {subject.code}{subject.credits != null ? ` • Credits: ${subject.credits}` : ''}
+                            </div>
+                          </div>
+                        </div>
+                        {subject.credits != null && <Badge variant="outline">{subject.credits} Credits</Badge>}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Defaulters */}
+          <TabsContent value="defaulters" className="space-y-6 mt-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Defaulters List</CardTitle>
+                <CardDescription>Students with attendance below 85% in your assigned sections</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {/* Filters */}
+                  <div className="flex flex-wrap gap-2">
+                    <Input
+                      placeholder="Search by name, roll number..."
+                      value={defaultersSearchQuery}
+                      onChange={(e) => setDefaultersSearchQuery(e.target.value)}
+                      className="max-w-xs"
+                    />
+                    <Select value={defaulterMinPct} onValueChange={setDefaulterMinPct}>
+                      <SelectTrigger className="w-[120px]">
+                        <SelectValue placeholder="Min %" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="0">0%</SelectItem>
+                        <SelectItem value="50">50%</SelectItem>
+                        <SelectItem value="60">60%</SelectItem>
+                        <SelectItem value="70">70%</SelectItem>
+                        <SelectItem value="75">75%</SelectItem>
+                        <SelectItem value="80">80%</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Select value={defaulterMaxPct} onValueChange={setDefaulterMaxPct}>
+                      <SelectTrigger className="w-[120px]">
+                        <SelectValue placeholder="Max %" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="70">70%</SelectItem>
+                        <SelectItem value="75">75%</SelectItem>
+                        <SelectItem value="80">80%</SelectItem>
+                        <SelectItem value="85">85%</SelectItem>
+                        <SelectItem value="90">90%</SelectItem>
+                        <SelectItem value="100">100%</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Defaulters Table */}
+                  <div className="border rounded-lg overflow-hidden">
+                    <table className="w-full">
+                      <thead className="bg-muted">
+                        <tr>
+                          <th className="px-4 py-2 text-left text-sm font-medium">Name</th>
+                          <th className="px-4 py-2 text-left text-sm font-medium">Roll Number</th>
+                          <th className="px-4 py-2 text-left text-sm font-medium">Department</th>
+                          <th className="px-4 py-2 text-left text-sm font-medium">Section</th>
+                          <th className="px-4 py-2 text-left text-sm font-medium">Year</th>
+                          <th className="px-4 py-2 text-left text-sm font-medium">Attendance %</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {facultyDefaulters.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
+                              No defaulters found in your assigned sections
+                            </td>
+                          </tr>
+                        ) : (
+                          facultyDefaulters
+                            .filter((s) => {
+                              const q = defaultersSearchQuery.trim().toLowerCase();
+                              if (q) {
+                                const name = (s.full_name || '').toLowerCase();
+                                const roll = (s.roll_number || '').toLowerCase();
+                                const user = (s.username || '').toLowerCase();
+                                if (!name.includes(q) && !roll.includes(q) && !user.includes(q)) return false;
+                              }
+                              const minPct = Number(defaulterMinPct);
+                              const maxPct = Number(defaulterMaxPct);
+                              if (s.attendancePercentage < minPct || s.attendancePercentage > maxPct) return false;
+                              return true;
+                            })
+                            .map((defaulter) => (
+                              <tr key={defaulter.id} className="border-t hover:bg-muted/50">
+                                <td className="px-4 py-2 text-sm">{defaulter.full_name || '-'}</td>
+                                <td className="px-4 py-2 text-sm">{defaulter.roll_number || '-'}</td>
+                                <td className="px-4 py-2 text-sm">{defaulter.department || '-'}</td>
+                                <td className="px-4 py-2 text-sm">{defaulter.section || '-'}</td>
+                                <td className="px-4 py-2 text-sm">{defaulter.year || '-'}</td>
+                                <td className="px-4 py-2 text-sm">
+                                  <Badge variant={defaulter.attendancePercentage < 75 ? 'destructive' : 'secondary'}>
+                                    {defaulter.attendancePercentage.toFixed(1)}%
+                                  </Badge>
+                                </td>
+                              </tr>
+                            ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* QR Attendance Session Dialog */}
+          <Dialog open={qrSessionDialogOpen} onOpenChange={setQrSessionDialogOpen}>
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle>Start QR Attendance Session</DialogTitle>
+                <DialogDescription>Configure the attendance session parameters</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="qr-subject">Subject *</Label>
+                  <Select value={qrSessionForm.subject} onValueChange={(value) => setQrSessionForm({...qrSessionForm, subject: value})}>
+                    <SelectTrigger id="qr-subject">
+                      <SelectValue placeholder="Select subject" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {subjectsAll.map((subject) => (
+                        <SelectItem key={subject.id} value={subject.code}>
+                          {subject.code} - {subject.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="qr-duration">Duration (hours) *</Label>
+                  <Input
+                    id="qr-duration"
+                    type="number"
+                    min="1"
+                    max="24"
+                    step="0.5"
+                    value={qrSessionForm.duration_hours}
+                    onChange={(e) => setQrSessionForm({...qrSessionForm, duration_hours: parseFloat(e.target.value) || 1})}
+                  />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setQrSessionDialogOpen(false)}>Cancel</Button>
+                <Button onClick={handleStartQrSession}>Start Session</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          {/* Profile */}
+          <TabsContent value="profile" className="space-y-6 mt-6">
+            <Card className="border-emerald-200/50">
+              <CardHeader className="flex flex-row items-center justify-between gap-4 flex-wrap">
+                <div className="flex items-start gap-3">
+                  <div className="w-12 h-12 rounded-xl bg-emerald-100 flex items-center justify-center shrink-0">
+                    <UserCircle className="w-7 h-7 text-emerald-600" />
+                  </div>
+                  <div>
+                    <CardTitle>Profile</CardTitle>
+                    <CardDescription>Your faculty account. Assigned subjects are managed by admin.</CardDescription>
+                  </div>
+                </div>
+                {facultyId != null && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="rounded-xl"
+                    onClick={() => {
+                      setProfileEditForm({
+                        full_name: apiProfile?.full_name || '',
+                        phone: apiProfile?.phone || '',
+                        username: apiProfile?.username || '',
+                        email: apiProfile?.email || user?.email || '',
+                      });
+                      setProfileEditOpen(true);
+                    }}
+                  >
+                    <Edit className="w-4 h-4 mr-2" /> Edit
+                  </Button>
+                )}
+              </CardHeader>
+              <CardContent>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="text-sm text-muted-foreground">Username</label>
+                    <p className="font-medium">{apiProfile?.username ?? '–'}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted-foreground">Email</label>
+                    <p className="font-medium">{apiProfile?.email ?? user?.email ?? '–'}</p>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="text-sm text-muted-foreground">Full name</label>
+                    <p className="font-medium">{apiProfile?.full_name ?? user?.name ?? '–'}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted-foreground">Phone</label>
+                    <p className="font-medium">{apiProfile?.phone ?? '–'}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted-foreground">Branch(es)</label>
+                    <p className="font-medium">
+                      {apiProfile?.departments?.length
+                        ? apiProfile.departments.join(', ')
+                        : facultyDeptCodes.length
+                          ? facultyDeptCodes.join(', ')
+                          : '–'}
+                    </p>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="text-sm text-muted-foreground">Assigned subjects</label>
+                    {facultyAssignedSubjectDisplay?.length ? (
+                      <>
+                        <p className="font-mono text-sm font-semibold tracking-tight mt-1">
+                          {facultyAssignedSubjectDisplay.map((p) => p.code).join(', ')}
+                        </p>
+                        <p className="text-sm text-muted-foreground mt-1 leading-relaxed">
+                          {facultyAssignedSubjectDisplay.map((p) => (p.name ? `${p.code} — ${p.name}` : p.code)).join(' · ')}
+                        </p>
+                      </>
+                    ) : (
+                      <p className="font-medium">–</p>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      </div>
+
+      <Dialog open={profileEditOpen} onOpenChange={setProfileEditOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit profile</DialogTitle>
+            <DialogDescription>Update your username, email, name, and phone.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label>Username</Label>
+              <Input
+                value={profileEditForm.username}
+                onChange={(e) => setProfileEditForm((f) => ({ ...f, username: e.target.value.trim() }))}
+                placeholder="Username (login)"
+                autoComplete="username"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label>Email</Label>
+              <Input
+                type="email"
+                value={profileEditForm.email}
+                onChange={(e) => setProfileEditForm((f) => ({ ...f, email: e.target.value.trim() }))}
+                placeholder="Email"
+                autoComplete="email"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label>Full name</Label>
+              <Input
+                value={profileEditForm.full_name}
+                onChange={(e) => setProfileEditForm((f) => ({ ...f, full_name: e.target.value }))}
+                placeholder="Full name"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label>Phone</Label>
+              <Input
+                value={profileEditForm.phone}
+                onChange={(e) => setProfileEditForm((f) => ({ ...f, phone: e.target.value }))}
+                placeholder="Phone"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setProfileEditOpen(false)}>Cancel</Button>
+            <Button onClick={handleSaveProfile} className="rounded-xl">
+              <Save className="w-4 h-4 mr-2" /> Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* QR Full Screen Dialog */}
+      <Dialog open={qrFullScreenOpen} onOpenChange={setQrFullScreenOpen}>
+        <DialogContent className="max-w-7xl w-full h-[90vh] flex flex-col">
+          <DialogHeader>
+            <div className="flex justify-between items-center w-full">
+              <div>
+                <DialogTitle>QR Code - Full Screen</DialogTitle>
+                <DialogDescription>
+                  Session ID: {hideSessionId ? '••••••' : displaySessionId}
+                </DialogDescription>
+              </div>
+              <div className="flex gap-2">
+                <Button 
+                  variant="outline"
+                  size="sm"
+                  onClick={toggleFullScreen}
+                >
+                  {isFullscreen ? <Minimize className="w-4 h-4 mr-2" /> : <Maximize className="w-4 h-4 mr-2" />}
+                  {isFullscreen ? 'Exit Full Screen' : 'Full Screen'}
+                </Button>
+                <Button 
+                  variant="ghost" 
+                  size="sm"
+                  onClick={() => setQrFullScreenOpen(false)}
+                >
+                  <XCircle className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
+          </DialogHeader>
+          <div className="flex-1 flex flex-col items-center justify-center py-8">
+            {qrCodeImage ? (
+              <div className="bg-white p-8 rounded-lg shadow-lg">
+                <img src={qrCodeImage} alt="QR Code" className="w-[500px] h-[500px]" />
+              </div>
+            ) : (
+              <div className="w-[500px] h-[500px] bg-gray-200 rounded-lg flex items-center justify-center">
+                <span className="text-lg text-muted-foreground">Loading QR...</span>
+              </div>
+            )}
+            <p className="text-sm text-muted-foreground mt-4">QR refreshes every 5 seconds</p>
+            <div className="mt-4 flex gap-2">
+              <Button 
+                variant="outline"
+                onClick={() => {
+                  navigator.clipboard.writeText(displaySessionId);
+                  toast({ title: 'Copied', description: 'Session ID copied to clipboard' });
+                }}
+              >
+                <FileDown className="w-4 h-4 mr-2" />
+                Copy Session ID
+              </Button>
+              <Button 
+                variant="outline"
+                onClick={() => setHideSessionId(!hideSessionId)}
+              >
+                {hideSessionId ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}
+                {hideSessionId ? 'Show ID' : 'Hide ID'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Change Password Dialog */}
+          <Dialog open={changePasswordOpen} onOpenChange={setChangePasswordOpen}>
+          <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Change password</DialogTitle>
+            <DialogDescription>Enter your current password and choose a new one.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label>Current password</Label>
+              <Input
+                type="password"
+                value={changePasswordForm.current_password}
+                onChange={e => setChangePasswordForm(f => ({ ...f, current_password: e.target.value }))}
+                placeholder="Current password"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label>New password</Label>
+              <Input
+                type="password"
+                value={changePasswordForm.new_password}
+                onChange={e => setChangePasswordForm(f => ({ ...f, new_password: e.target.value }))}
+                placeholder="New password"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label>Confirm new password</Label>
+              <Input
+                type="password"
+                value={changePasswordForm.confirm_password}
+                onChange={e => setChangePasswordForm(f => ({ ...f, confirm_password: e.target.value }))}
+                placeholder="Confirm new password"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setChangePasswordOpen(false)}>Cancel</Button>
+            <Button onClick={handleFacultyChangePassword}>Change password</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};
