@@ -619,14 +619,23 @@ def user_detail_view(request, pk):
 
     is_admin = request.user.role == 'admin' or request.user.is_superuser
     is_faculty = request.user.role == 'faculty'
+    is_mentor = request.user.role == 'mentor'
     is_self = request.user.id == target.id
     _dept_str = (request.user.department or '').strip()
     _dept_list = [x.strip() for x in _dept_str.split(',') if x.strip()]
     faculty_can_edit_student = is_faculty and target.role == 'student' and (
         (target.department in _dept_list) if _dept_list else (target.department == request.user.department)
     )
+    
+    # Check if mentor is assigned to this student
+    mentor_can_view_student = False
+    if is_mentor and target.role == 'student':
+        mentor_can_view_student = MentorStudentAssignment.objects.filter(
+            mentor=request.user, 
+            student=target
+        ).exists()
 
-    if not (is_admin or is_self or faculty_can_edit_student):
+    if not (is_admin or is_self or faculty_can_edit_student or mentor_can_view_student):
         return Response({"detail": "Not allowed to access this user."}, status=403)
 
     if request.method == 'GET':
@@ -637,6 +646,10 @@ def user_detail_view(request, pk):
         return Response(data)
 
     elif request.method == 'PATCH':
+        # Mentors can only view, not edit student profiles
+        if mentor_can_view_student and not is_admin and not is_self and not faculty_can_edit_student:
+            return Response({"detail": "Mentors can only view student profiles, not edit them."}, status=403)
+        
         data = request.data.copy()
         new_password = (data.pop('new_password', None) or data.pop('password', None) or '').strip()
         current_password = (data.pop('current_password', None) or '').strip()
@@ -2484,7 +2497,42 @@ def mentor_students_view(request, mentor_id=None):
             'phone': student.phone,
             'is_detained': student.is_detained,
             'assignment_notes': assignment.notes,
-            'assigned_at': assignment.assigned_at
+            'assigned_at': assignment.assigned_at,
+            # Personal Details
+            'date_of_birth': student.date_of_birth,
+            'date_of_joining': student.date_of_joining,
+            'guardian_name': student.guardian_name,
+            'guardian_relation': student.guardian_relation,
+            'occupation': student.occupation,
+            'income': student.income,
+            'address': student.address,
+            'city': student.city,
+            'state': student.state,
+            'pincode': student.pincode,
+            'admission_category': student.admission_category,
+            'eapcet_rank': student.eapcet_rank,
+            'ecet_rank': student.ecet_rank,
+            'reservation_category': student.reservation_category,
+            'scholarship': student.scholarship,
+            'residential_details': student.residential_details,
+            'mode_of_transport': student.mode_of_transport,
+            'photo': student.photo.url if student.photo and hasattr(student.photo, 'url') else None,
+            # Educational Profile
+            'ssc_board': student.ssc_board,
+            'ssc_school': student.ssc_school,
+            'ssc_percentage': student.ssc_percentage,
+            'ssc_class': student.ssc_class,
+            'intermediate_board': student.intermediate_board,
+            'intermediate_college': student.intermediate_college,
+            'intermediate_percentage': student.intermediate_percentage,
+            'intermediate_class': student.intermediate_class,
+            'medium_of_instruction': student.medium_of_instruction,
+            'local': student.local,
+            'mother_tongue': student.mother_tongue,
+            'achievements': student.achievements,
+            'hobbies': student.hobbies,
+            'areas_of_interest': student.areas_of_interest,
+            'other_information': student.other_information
         })
 
     return Response(students)
