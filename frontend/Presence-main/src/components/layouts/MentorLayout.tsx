@@ -28,6 +28,10 @@ import {
   Heart,
   Target,
   FileText,
+  Plus,
+  Edit,
+  Trash2,
+  Save,
 } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { format, parseISO } from 'date-fns';
@@ -82,6 +86,48 @@ type AssignedStudent = {
   other_information: string | null;
 };
 
+type MentorAttendanceRecord = {
+  id: number;
+  student: number;
+  student_name: string;
+  student_roll_number: string | null;
+  mentor: number;
+  mentor_name: string;
+  month: string;
+  semester: string;
+  academic_year: string;
+  total_classes: number;
+  classes_attended: number;
+  attendance_percentage: number;
+  remarks: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type AcademicRecord = {
+  id: number;
+  student: number;
+  student_name: string;
+  student_roll_number: string | null;
+  course_name: string;
+  semester: string;
+  academic_year: string;
+  mid1_marks: number | null;
+  mid2_marks: number | null;
+  cie_marks: number | null;
+  total_internal_marks: number | null;
+  marks_obtained: number | null;
+  credits_obtained: number | null;
+  sgpa: number | null;
+  audit_course_cleared: boolean;
+  grade: string | null;
+  remarks: string | null;
+  created_at: string;
+  updated_at: string;
+  updated_by: number | null;
+  updated_by_name: string | null;
+};
+
 export const MentorLayout: React.FC = () => {
   const { user, logout } = useAuth();
   const [activeTab, setActiveTab] = useState('students');
@@ -93,6 +139,37 @@ export const MentorLayout: React.FC = () => {
   const [selectedStudent, setSelectedStudent] = useState<AssignedStudent | null>(null);
   const [studentProfileOpen, setStudentProfileOpen] = useState(false);
   const [sortBy, setSortBy] = useState<'name' | 'roll_number' | 'department' | 'year'>('name');
+  const [academicRecords, setAcademicRecords] = useState<AcademicRecord[]>([]);
+  const [academicRecordsLoading, setAcademicRecordsLoading] = useState(false);
+  const [academicRecordDialogOpen, setAcademicRecordDialogOpen] = useState(false);
+  const [editingAcademicRecord, setEditingAcademicRecord] = useState<AcademicRecord | null>(null);
+  const [academicRecordForm, setAcademicRecordForm] = useState({
+    course_name: '',
+    semester: '',
+    academic_year: '',
+    mid1_marks: '',
+    mid2_marks: '',
+    cie_marks: '',
+    total_internal_marks: '',
+    marks_obtained: '',
+    credits_obtained: '',
+    sgpa: '',
+    audit_course_cleared: false,
+    grade: '',
+    remarks: '',
+  });
+  const [mentorAttendanceRecords, setMentorAttendanceRecords] = useState<MentorAttendanceRecord[]>([]);
+  const [mentorAttendanceLoading, setMentorAttendanceLoading] = useState(false);
+  const [mentorAttendanceDialogOpen, setMentorAttendanceDialogOpen] = useState(false);
+  const [editingMentorAttendance, setEditingMentorAttendance] = useState<MentorAttendanceRecord | null>(null);
+  const [mentorAttendanceForm, setMentorAttendanceForm] = useState({
+    month: '',
+    semester: '',
+    academic_year: '',
+    total_classes: '',
+    classes_attended: '',
+    remarks: '',
+  });
 
   useEffect(() => {
     loadAssignedStudents();
@@ -159,6 +236,313 @@ export const MentorLayout: React.FC = () => {
     setStudentProfileOpen(true);
   };
 
+  const loadAcademicRecords = async (studentId: number) => {
+    setAcademicRecordsLoading(true);
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${studentId}/academic-records/`));
+      if (res.ok) {
+        const data = await res.json();
+        setAcademicRecords(Array.isArray(data) ? data : []);
+      } else {
+        toast({
+          title: 'Error',
+          description: 'Failed to load academic records.',
+          variant: 'destructive'
+        });
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Network error occurred.',
+        variant: 'destructive'
+      });
+    } finally {
+      setAcademicRecordsLoading(false);
+    }
+  };
+
+  const handleViewAcademicRecords = (student: AssignedStudent) => {
+    setSelectedStudent(student);
+    loadAcademicRecords(student.id);
+    setActiveTab('academic-records');
+  };
+
+  const handleAddAcademicRecord = () => {
+    setEditingAcademicRecord(null);
+    setAcademicRecordForm({
+      course_name: '',
+      semester: '',
+      academic_year: '',
+      mid1_marks: '',
+      mid2_marks: '',
+      cie_marks: '',
+      total_internal_marks: '',
+      marks_obtained: '',
+      credits_obtained: '',
+      sgpa: '',
+      audit_course_cleared: false,
+      grade: '',
+      remarks: '',
+    });
+    setAcademicRecordDialogOpen(true);
+  };
+
+  const handleEditAcademicRecord = (record: AcademicRecord) => {
+    setEditingAcademicRecord(record);
+    setAcademicRecordForm({
+      course_name: record.course_name,
+      semester: record.semester,
+      academic_year: record.academic_year,
+      mid1_marks: record.mid1_marks?.toString() || '',
+      mid2_marks: record.mid2_marks?.toString() || '',
+      cie_marks: record.cie_marks?.toString() || '',
+      total_internal_marks: record.total_internal_marks?.toString() || '',
+      marks_obtained: record.marks_obtained?.toString() || '',
+      credits_obtained: record.credits_obtained?.toString() || '',
+      sgpa: record.sgpa?.toString() || '',
+      audit_course_cleared: record.audit_course_cleared,
+      grade: record.grade || '',
+      remarks: record.remarks || '',
+    });
+    setAcademicRecordDialogOpen(true);
+  };
+
+  const handleSaveAcademicRecord = async () => {
+    if (!selectedStudent) return;
+
+    const payload = {
+      ...academicRecordForm,
+      mid1_marks: academicRecordForm.mid1_marks ? parseFloat(academicRecordForm.mid1_marks) : null,
+      mid2_marks: academicRecordForm.mid2_marks ? parseFloat(academicRecordForm.mid2_marks) : null,
+      cie_marks: academicRecordForm.cie_marks ? parseFloat(academicRecordForm.cie_marks) : null,
+      total_internal_marks: academicRecordForm.total_internal_marks ? parseFloat(academicRecordForm.total_internal_marks) : null,
+      marks_obtained: academicRecordForm.marks_obtained ? parseFloat(academicRecordForm.marks_obtained) : null,
+      credits_obtained: academicRecordForm.credits_obtained ? parseFloat(academicRecordForm.credits_obtained) : null,
+      sgpa: academicRecordForm.sgpa ? parseFloat(academicRecordForm.sgpa) : null,
+    };
+
+    try {
+      let res;
+      if (editingAcademicRecord) {
+        res = await authFetch(
+          apiUrl(`/api/students/${selectedStudent.id}/academic-records/${editingAcademicRecord.id}/`),
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          }
+        );
+      } else {
+        res = await authFetch(
+          apiUrl(`/api/students/${selectedStudent.id}/academic-records/`),
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          }
+        );
+      }
+
+      if (res.ok) {
+        toast({
+          title: 'Success',
+          description: editingAcademicRecord ? 'Academic record updated successfully.' : 'Academic record added successfully.',
+        });
+        setAcademicRecordDialogOpen(false);
+        loadAcademicRecords(selectedStudent.id);
+      } else {
+        const errorData = await res.json();
+        toast({
+          title: 'Error',
+          description: errorData.detail || 'Failed to save academic record.',
+          variant: 'destructive'
+        });
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Network error occurred.',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  const handleDeleteAcademicRecord = async (recordId: number) => {
+    if (!selectedStudent) return;
+    if (!confirm('Are you sure you want to delete this academic record?')) return;
+
+    try {
+      const res = await authFetch(
+        apiUrl(`/api/students/${selectedStudent.id}/academic-records/${recordId}/`),
+        { method: 'DELETE' }
+      );
+
+      if (res.ok) {
+        toast({
+          title: 'Success',
+          description: 'Academic record deleted successfully.',
+        });
+        loadAcademicRecords(selectedStudent.id);
+      } else {
+        toast({
+          title: 'Error',
+          description: 'Failed to delete academic record.',
+          variant: 'destructive'
+        });
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Network error occurred.',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  const loadMentorAttendance = async (studentId: number) => {
+    setMentorAttendanceLoading(true);
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${studentId}/mentor-attendance/`));
+      if (res.ok) {
+        const data = await res.json();
+        setMentorAttendanceRecords(Array.isArray(data) ? data : []);
+      } else {
+        toast({
+          title: 'Error',
+          description: 'Failed to load mentor attendance records.',
+          variant: 'destructive'
+        });
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Network error occurred.',
+        variant: 'destructive'
+      });
+    } finally {
+      setMentorAttendanceLoading(false);
+    }
+  };
+
+  const handleViewMentorAttendance = (student: AssignedStudent) => {
+    setSelectedStudent(student);
+    loadMentorAttendance(student.id);
+    setActiveTab('mentor-attendance');
+  };
+
+  const handleAddMentorAttendance = () => {
+    setEditingMentorAttendance(null);
+    setMentorAttendanceForm({
+      month: '',
+      semester: '',
+      academic_year: '',
+      total_classes: '',
+      classes_attended: '',
+      remarks: '',
+    });
+    setMentorAttendanceDialogOpen(true);
+  };
+
+  const handleEditMentorAttendance = (record: MentorAttendanceRecord) => {
+    setEditingMentorAttendance(record);
+    setMentorAttendanceForm({
+      month: record.month,
+      semester: record.semester,
+      academic_year: record.academic_year,
+      total_classes: record.total_classes.toString(),
+      classes_attended: record.classes_attended.toString(),
+      remarks: record.remarks || '',
+    });
+    setMentorAttendanceDialogOpen(true);
+  };
+
+  const handleSaveMentorAttendance = async () => {
+    if (!selectedStudent) return;
+
+    const payload = {
+      ...mentorAttendanceForm,
+      total_classes: parseInt(mentorAttendanceForm.total_classes) || 0,
+      classes_attended: parseInt(mentorAttendanceForm.classes_attended) || 0,
+    };
+
+    try {
+      let res;
+      if (editingMentorAttendance) {
+        res = await authFetch(
+          apiUrl(`/api/students/${selectedStudent.id}/mentor-attendance/${editingMentorAttendance.id}/`),
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          }
+        );
+      } else {
+        res = await authFetch(
+          apiUrl(`/api/students/${selectedStudent.id}/mentor-attendance/`),
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          }
+        );
+      }
+
+      if (res.ok) {
+        toast({
+          title: 'Success',
+          description: editingMentorAttendance ? 'Attendance record updated successfully.' : 'Attendance record added successfully.',
+        });
+        setMentorAttendanceDialogOpen(false);
+        loadMentorAttendance(selectedStudent.id);
+      } else {
+        const errorData = await res.json();
+        toast({
+          title: 'Error',
+          description: errorData.detail || 'Failed to save attendance record.',
+          variant: 'destructive'
+        });
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Network error occurred.',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  const handleDeleteMentorAttendance = async (recordId: number) => {
+    if (!selectedStudent) return;
+    if (!confirm('Are you sure you want to delete this attendance record?')) return;
+
+    try {
+      const res = await authFetch(
+        apiUrl(`/api/students/${selectedStudent.id}/mentor-attendance/${recordId}/`),
+        { method: 'DELETE' }
+      );
+
+      if (res.ok) {
+        toast({
+          title: 'Success',
+          description: 'Attendance record deleted successfully.',
+        });
+        loadMentorAttendance(selectedStudent.id);
+      } else {
+        toast({
+          title: 'Error',
+          description: 'Failed to delete attendance record.',
+          variant: 'destructive'
+        });
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Network error occurred.',
+        variant: 'destructive'
+      });
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       {/* Header */}
@@ -190,6 +574,18 @@ export const MentorLayout: React.FC = () => {
               <Users className="w-4 h-4 mr-2" />
               My Students
             </TabsTrigger>
+            {selectedStudent && (
+              <>
+                <TabsTrigger value="academic-records">
+                  <FileText className="w-4 h-4 mr-2" />
+                  Academic Records
+                </TabsTrigger>
+                <TabsTrigger value="mentor-attendance">
+                  <CalendarIcon className="w-4 h-4 mr-2" />
+                  Attendance
+                </TabsTrigger>
+              </>
+            )}
           </TabsList>
 
           <TabsContent value="students">
@@ -376,6 +772,24 @@ export const MentorLayout: React.FC = () => {
                                 <User className="w-4 h-4 mr-2" />
                                 View Complete Profile
                               </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleViewAcademicRecords(student)}
+                                className="w-full md:w-auto bg-blue-50 hover:bg-blue-100 border-blue-200"
+                              >
+                                <FileText className="w-4 h-4 mr-2" />
+                                Academic Records
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleViewMentorAttendance(student)}
+                                className="w-full md:w-auto bg-green-50 hover:bg-green-100 border-green-200"
+                              >
+                                <CalendarIcon className="w-4 h-4 mr-2" />
+                                Attendance
+                              </Button>
                               <div className="text-gray-500">
                                 Assigned: {new Date(student.assigned_at).toLocaleDateString()}
                               </div>
@@ -394,6 +808,236 @@ export const MentorLayout: React.FC = () => {
               </Card>
             </div>
           </TabsContent>
+
+          {/* Academic Records Tab */}
+          {selectedStudent && (
+            <TabsContent value="academic-records">
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Academic Records</h2>
+                    <p className="text-gray-600">
+                      {selectedStudent.full_name || selectedStudent.username} - {selectedStudent.roll_number || 'N/A'}
+                    </p>
+                  </div>
+                  <Button onClick={handleAddAcademicRecord} className="bg-blue-600 hover:bg-blue-700">
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Academic Record
+                  </Button>
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Academic Performance</CardTitle>
+                    <CardDescription>
+                      Track and manage academic records for {selectedStudent.full_name || selectedStudent.username}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {academicRecordsLoading ? (
+                      <div className="text-center py-8 text-gray-500">Loading academic records...</div>
+                    ) : academicRecords.length === 0 ? (
+                      <div className="text-center py-12">
+                        <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                        <p className="text-gray-500 mb-2">No academic records found</p>
+                        <p className="text-sm text-gray-400">Click "Add Academic Record" to start tracking academic performance</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {academicRecords.map((record) => (
+                          <div key={record.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                            <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <h3 className="font-semibold text-gray-900">{record.course_name}</h3>
+                                  <Badge variant="outline">{record.semester}</Badge>
+                                  <Badge variant="outline">{record.academic_year}</Badge>
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                                  <div>
+                                    <span className="text-gray-600">Mid-1:</span>
+                                    <span className="ml-1 font-medium">{record.mid1_marks || 'N/A'}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-gray-600">Mid-2:</span>
+                                    <span className="ml-1 font-medium">{record.mid2_marks || 'N/A'}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-gray-600">CIE:</span>
+                                    <span className="ml-1 font-medium">{record.cie_marks || 'N/A'}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-gray-600">Total Internal:</span>
+                                    <span className="ml-1 font-medium">{record.total_internal_marks || 'N/A'}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-gray-600">Marks Obtained:</span>
+                                    <span className="ml-1 font-medium">{record.marks_obtained || 'N/A'}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-gray-600">Credits:</span>
+                                    <span className="ml-1 font-medium">{record.credits_obtained || 'N/A'}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-gray-600">SGPA:</span>
+                                    <span className="ml-1 font-medium">{record.sgpa || 'N/A'}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-gray-600">Grade:</span>
+                                    <span className="ml-1 font-medium">{record.grade || 'N/A'}</span>
+                                  </div>
+                                </div>
+                                {record.audit_course_cleared && (
+                                  <div className="mt-2">
+                                    <Badge className="bg-green-100 text-green-800">Audit Course Cleared</Badge>
+                                  </div>
+                                )}
+                                {record.remarks && (
+                                  <div className="mt-2 text-sm text-gray-600">
+                                    <span className="font-medium">Remarks:</span> {record.remarks}
+                                  </div>
+                                )}
+                                <div className="mt-2 text-xs text-gray-500">
+                                  Last updated: {new Date(record.updated_at).toLocaleString()} by {record.updated_by_name || 'Unknown'}
+                                </div>
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleEditAcademicRecord(record)}
+                                >
+                                  <Edit className="w-4 h-4 mr-1" />
+                                  Edit
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleDeleteAcademicRecord(record.id)}
+                                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                >
+                                  <Trash2 className="w-4 h-4 mr-1" />
+                                  Delete
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            </TabsContent>
+          )}
+
+          {/* Mentor Attendance Tab */}
+          {selectedStudent && (
+            <TabsContent value="mentor-attendance">
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Attendance Records</h2>
+                    <p className="text-gray-600">
+                      {selectedStudent.full_name || selectedStudent.username} - {selectedStudent.roll_number || 'N/A'}
+                    </p>
+                  </div>
+                  <Button onClick={handleAddMentorAttendance} className="bg-green-600 hover:bg-green-700">
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Attendance Record
+                  </Button>
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Monthly Attendance</CardTitle>
+                    <CardDescription>
+                      Track and manage attendance records for {selectedStudent.full_name || selectedStudent.username}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {mentorAttendanceLoading ? (
+                      <div className="text-center py-8 text-gray-500">Loading attendance records...</div>
+                    ) : mentorAttendanceRecords.length === 0 ? (
+                      <div className="text-center py-12">
+                        <CalendarIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                        <p className="text-gray-500 mb-2">No attendance records found</p>
+                        <p className="text-sm text-gray-400">Click "Add Attendance Record" to start tracking attendance</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {mentorAttendanceRecords.map((record) => (
+                          <div key={record.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                            <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <h3 className="font-semibold text-gray-900">{record.month}</h3>
+                                  <Badge variant="outline">{record.semester}</Badge>
+                                  <Badge variant="outline">{record.academic_year}</Badge>
+                                  <Badge 
+                                    className={
+                                      record.attendance_percentage >= 75 
+                                        ? 'bg-green-100 text-green-800' 
+                                        : record.attendance_percentage >= 60 
+                                          ? 'bg-yellow-100 text-yellow-800' 
+                                          : 'bg-red-100 text-red-800'
+                                    }
+                                  >
+                                    {record.attendance_percentage.toFixed(2)}%
+                                  </Badge>
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+                                  <div>
+                                    <span className="text-gray-600">Total Classes:</span>
+                                    <span className="ml-1 font-medium">{record.total_classes}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-gray-600">Classes Attended:</span>
+                                    <span className="ml-1 font-medium">{record.classes_attended}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-gray-600">Attendance %:</span>
+                                    <span className="ml-1 font-medium">{record.attendance_percentage.toFixed(2)}%</span>
+                                  </div>
+                                </div>
+                                {record.remarks && (
+                                  <div className="mt-2 text-sm text-gray-600">
+                                    <span className="font-medium">Remarks:</span> {record.remarks}
+                                  </div>
+                                )}
+                                <div className="mt-2 text-xs text-gray-500">
+                                  Last updated: {new Date(record.updated_at).toLocaleString()} by {record.mentor_name || 'Unknown'}
+                                </div>
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleEditMentorAttendance(record)}
+                                >
+                                  <Edit className="w-4 h-4 mr-1" />
+                                  Edit
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleDeleteMentorAttendance(record.id)}
+                                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                >
+                                  <Trash2 className="w-4 h-4 mr-1" />
+                                  Delete
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            </TabsContent>
+          )}
         </Tabs>
       </main>
 
@@ -672,6 +1316,302 @@ export const MentorLayout: React.FC = () => {
               )}
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Academic Record Dialog */}
+      <Dialog open={academicRecordDialogOpen} onOpenChange={setAcademicRecordDialogOpen}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <DialogTitle>
+                  {editingAcademicRecord ? 'Edit Academic Record' : 'Add Academic Record'}
+                </DialogTitle>
+                <p className="text-sm text-gray-500 mt-1">
+                  {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setAcademicRecordDialogOpen(false)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="course_name">Course Name *</Label>
+                <Input
+                  id="course_name"
+                  value={academicRecordForm.course_name}
+                  onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, course_name: e.target.value })}
+                  placeholder="e.g., Data Structures"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="semester">Semester *</Label>
+                <Input
+                  id="semester"
+                  value={academicRecordForm.semester}
+                  onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, semester: e.target.value })}
+                  placeholder="e.g., 1-1, 2-2"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="academic_year">Academic Year *</Label>
+                <Input
+                  id="academic_year"
+                  value={academicRecordForm.academic_year}
+                  onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, academic_year: e.target.value })}
+                  placeholder="e.g., 2023-24"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="grade">Grade</Label>
+                <Input
+                  id="grade"
+                  value={academicRecordForm.grade}
+                  onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, grade: e.target.value })}
+                  placeholder="e.g., O, A+, A, B+"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="mid1_marks">Mid-1 Marks</Label>
+                <Input
+                  id="mid1_marks"
+                  type="number"
+                  step="0.01"
+                  value={academicRecordForm.mid1_marks}
+                  onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, mid1_marks: e.target.value })}
+                  placeholder="0-100"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="mid2_marks">Mid-2 Marks</Label>
+                <Input
+                  id="mid2_marks"
+                  type="number"
+                  step="0.01"
+                  value={academicRecordForm.mid2_marks}
+                  onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, mid2_marks: e.target.value })}
+                  placeholder="0-100"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="cie_marks">CIE/Internal Marks</Label>
+                <Input
+                  id="cie_marks"
+                  type="number"
+                  step="0.01"
+                  value={academicRecordForm.cie_marks}
+                  onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, cie_marks: e.target.value })}
+                  placeholder="0-100"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="total_internal_marks">Total Internal Marks</Label>
+                <Input
+                  id="total_internal_marks"
+                  type="number"
+                  step="0.01"
+                  value={academicRecordForm.total_internal_marks}
+                  onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, total_internal_marks: e.target.value })}
+                  placeholder="0-100"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="marks_obtained">Marks Obtained</Label>
+                <Input
+                  id="marks_obtained"
+                  type="number"
+                  step="0.01"
+                  value={academicRecordForm.marks_obtained}
+                  onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, marks_obtained: e.target.value })}
+                  placeholder="0-100"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="credits_obtained">Credits Obtained</Label>
+                <Input
+                  id="credits_obtained"
+                  type="number"
+                  step="0.01"
+                  value={academicRecordForm.credits_obtained}
+                  onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, credits_obtained: e.target.value })}
+                  placeholder="e.g., 3, 4"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="sgpa">SGPA</Label>
+                <Input
+                  id="sgpa"
+                  type="number"
+                  step="0.01"
+                  value={academicRecordForm.sgpa}
+                  onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, sgpa: e.target.value })}
+                  placeholder="0-10"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="audit_course_cleared"
+                checked={academicRecordForm.audit_course_cleared}
+                onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, audit_course_cleared: e.target.checked })}
+                className="w-4 h-4 rounded border-gray-300"
+              />
+              <Label htmlFor="audit_course_cleared">Audit Course Cleared</Label>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="remarks">Remarks</Label>
+              <textarea
+                id="remarks"
+                value={academicRecordForm.remarks}
+                onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, remarks: e.target.value })}
+                placeholder="Additional remarks about academic performance..."
+                className="w-full min-h-[100px] px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            <div className="flex justify-end gap-3 pt-4">
+              <Button variant="outline" onClick={() => setAcademicRecordDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveAcademicRecord} className="bg-blue-600 hover:bg-blue-700">
+                <Save className="w-4 h-4 mr-2" />
+                {editingAcademicRecord ? 'Update Record' : 'Add Record'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Mentor Attendance Dialog */}
+      <Dialog open={mentorAttendanceDialogOpen} onOpenChange={setMentorAttendanceDialogOpen}>
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <DialogTitle>
+                  {editingMentorAttendance ? 'Edit Attendance Record' : 'Add Attendance Record'}
+                </DialogTitle>
+                <p className="text-sm text-gray-500 mt-1">
+                  {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setMentorAttendanceDialogOpen(false)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="month">Month *</Label>
+                <select
+                  id="month"
+                  value={mentorAttendanceForm.month}
+                  onChange={(e) => setMentorAttendanceForm({ ...mentorAttendanceForm, month: e.target.value })}
+                  className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white"
+                >
+                  <option value="">Select Month</option>
+                  <option value="January">January</option>
+                  <option value="February">February</option>
+                  <option value="March">March</option>
+                  <option value="April">April</option>
+                  <option value="May">May</option>
+                  <option value="June">June</option>
+                  <option value="July">July</option>
+                  <option value="August">August</option>
+                  <option value="September">September</option>
+                  <option value="October">October</option>
+                  <option value="November">November</option>
+                  <option value="December">December</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="semester">Semester *</Label>
+                <Input
+                  id="semester"
+                  value={mentorAttendanceForm.semester}
+                  onChange={(e) => setMentorAttendanceForm({ ...mentorAttendanceForm, semester: e.target.value })}
+                  placeholder="e.g., 1-1, 2-2"
+                />
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <Label htmlFor="academic_year">Academic Year *</Label>
+                <Input
+                  id="academic_year"
+                  value={mentorAttendanceForm.academic_year}
+                  onChange={(e) => setMentorAttendanceForm({ ...mentorAttendanceForm, academic_year: e.target.value })}
+                  placeholder="e.g., 2023-24"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="total_classes">Total Classes *</Label>
+                <Input
+                  id="total_classes"
+                  type="number"
+                  min="0"
+                  value={mentorAttendanceForm.total_classes}
+                  onChange={(e) => setMentorAttendanceForm({ ...mentorAttendanceForm, total_classes: e.target.value })}
+                  placeholder="e.g., 45"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="classes_attended">Classes Attended *</Label>
+                <Input
+                  id="classes_attended"
+                  type="number"
+                  min="0"
+                  value={mentorAttendanceForm.classes_attended}
+                  onChange={(e) => setMentorAttendanceForm({ ...mentorAttendanceForm, classes_attended: e.target.value })}
+                  placeholder="e.g., 42"
+                />
+              </div>
+            </div>
+
+            <div className="bg-blue-50 p-3 rounded-md">
+              <p className="text-sm text-blue-800">
+                <strong>Calculated Attendance:</strong> {mentorAttendanceForm.total_classes && mentorAttendanceForm.classes_attended 
+                  ? `${((parseInt(mentorAttendanceForm.classes_attended) / parseInt(mentorAttendanceForm.total_classes)) * 100).toFixed(2)}%`
+                  : '—'}
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="attendance_remarks">Remarks</Label>
+              <textarea
+                id="attendance_remarks"
+                value={mentorAttendanceForm.remarks}
+                onChange={(e) => setMentorAttendanceForm({ ...mentorAttendanceForm, remarks: e.target.value })}
+                placeholder="Additional remarks about attendance..."
+                className="w-full min-h-[80px] px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+              />
+            </div>
+
+            <div className="flex justify-end gap-3 pt-4">
+              <Button variant="outline" onClick={() => setMentorAttendanceDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveMentorAttendance} className="bg-green-600 hover:bg-green-700">
+                <Save className="w-4 h-4 mr-2" />
+                {editingMentorAttendance ? 'Update Record' : 'Add Record'}
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

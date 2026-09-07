@@ -1,6 +1,6 @@
 
 from rest_framework import serializers
-from .models import User, Attendance, Department, Subject, Section, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment
+from .models import User, Attendance, Department, Subject, Section, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord
 from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -387,3 +387,57 @@ class MentorStudentAssignmentSerializer(serializers.ModelSerializer):
 
     def get_student_section(self, obj):
         return obj.student.section
+
+
+class StudentAcademicRecordSerializer(serializers.ModelSerializer):
+    """Serializer for student academic records."""
+    student_name = serializers.SerializerMethodField(read_only=True)
+    student_roll_number = serializers.SerializerMethodField(read_only=True)
+    updated_by_name = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = StudentAcademicRecord
+        fields = (
+            'id', 'student', 'student_name', 'student_roll_number',
+            'course_name', 'semester', 'academic_year',
+            'mid1_marks', 'mid2_marks', 'cie_marks', 'total_internal_marks',
+            'marks_obtained', 'credits_obtained', 'sgpa',
+            'audit_course_cleared', 'grade', 'remarks',
+            'created_at', 'updated_at', 'updated_by', 'updated_by_name'
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at', 'updated_by')
+
+    def get_student_name(self, obj):
+        return obj.student.full_name or obj.student.username
+
+    def get_student_roll_number(self, obj):
+        return obj.student.roll_number
+
+    def get_updated_by_name(self, obj):
+        return obj.updated_by.full_name or obj.updated_by.username if obj.updated_by else None
+
+
+class MentorAttendanceRecordSerializer(serializers.ModelSerializer):
+    """Serializer for mentor attendance records."""
+    student_name = serializers.SerializerMethodField(read_only=True)
+    student_roll_number = serializers.SerializerMethodField(read_only=True)
+    mentor_name = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = MentorAttendanceRecord
+        fields = (
+            'id', 'student', 'student_name', 'student_roll_number',
+            'mentor', 'mentor_name', 'month', 'semester', 'academic_year',
+            'total_classes', 'classes_attended', 'attendance_percentage',
+            'remarks', 'created_at', 'updated_at'
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at', 'mentor')
+
+    def get_student_name(self, obj):
+        return obj.student.full_name or obj.student.username
+
+    def get_student_roll_number(self, obj):
+        return obj.student.roll_number
+
+    def get_mentor_name(self, obj):
+        return obj.mentor.full_name or obj.mentor.username

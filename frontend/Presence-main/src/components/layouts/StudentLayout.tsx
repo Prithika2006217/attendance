@@ -27,7 +27,7 @@ import {
 } from 'recharts';
 import {
   BookOpen,
-  Calendar,
+  Calendar as CalendarIcon,
   AlertTriangle,
   TrendingUp,
   Users,
@@ -138,6 +138,19 @@ export const StudentLayout: React.FC = () => {
     areas_of_interest: '',
     other_information: ''
   });
+  const [mentorAttendanceRecords, setMentorAttendanceRecords] = useState<{
+    id: number;
+    month: string;
+    semester: string;
+    academic_year: string;
+    total_classes: number;
+    classes_attended: number;
+    attendance_percentage: number;
+    remarks: string | null;
+    mentor_name: string;
+    updated_at: string;
+  }[]>([]);
+  const [mentorAttendanceLoading, setMentorAttendanceLoading] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [changePasswordForm, setChangePasswordForm] = useState({ current_password: '', new_password: '', confirm_password: '' });
   const [apiDepartments, setApiDepartments] = useState<Array<{ id: number; name: string; code: string }>>([]);
@@ -383,6 +396,30 @@ export const StudentLayout: React.FC = () => {
       setActiveTab('subjects');
     }
   }, [isStudentAttendanceFrozen, activeTab]);
+
+  const loadMentorAttendance = async () => {
+    if (numericId == null) return;
+    setMentorAttendanceLoading(true);
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${numericId}/mentor-attendance/`));
+      if (res.ok) {
+        const data = await res.json();
+        setMentorAttendanceRecords(Array.isArray(data) ? data : []);
+      } else {
+        setMentorAttendanceRecords([]);
+      }
+    } catch (error) {
+      setMentorAttendanceRecords([]);
+    } finally {
+      setMentorAttendanceLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'dashboard' || activeTab === 'attendance') {
+      loadMentorAttendance();
+    }
+  }, [activeTab, numericId]);
 
   useEffect(() => {
     if (numericId == null) return;
@@ -798,6 +835,7 @@ export const StudentLayout: React.FC = () => {
           <TabsList className="mb-6 flex flex-wrap gap-1.5 h-auto p-1.5 rounded-xl bg-muted/80">
             <TabsTrigger value="dashboard" disabled={isStudentAttendanceFrozen}>Dashboard</TabsTrigger>
             <TabsTrigger value="attendance" disabled={isStudentAttendanceFrozen}>My Attendance</TabsTrigger>
+            <TabsTrigger value="mentor-attendance">Mentor Attendance</TabsTrigger>
             <TabsTrigger value="qr-attendance" disabled={isStudentAttendanceFrozen}>QR Attendance</TabsTrigger>
             <TabsTrigger value="subjects">Subjects</TabsTrigger>
             <TabsTrigger value="student-details">Student Details</TabsTrigger>
@@ -871,7 +909,7 @@ export const StudentLayout: React.FC = () => {
               <Card>
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                   <CardTitle className="text-sm font-medium">Total Classes</CardTitle>
-                  <Calendar className="h-4 w-4 text-primary" />
+                  <CalendarIcon className="h-4 w-4 text-primary" />
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold">
@@ -1247,6 +1285,76 @@ export const StudentLayout: React.FC = () => {
                     Scan QR Code
                   </Button>
                 </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Mentor Attendance Tab */}
+          <TabsContent value="mentor-attendance">
+            <Card>
+              <CardHeader>
+                <CardTitle>Mentor Attendance Records</CardTitle>
+                <CardDescription>Latest attendance information entered by your mentor</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {mentorAttendanceLoading ? (
+                  <div className="text-center py-8 text-gray-500">Loading mentor attendance records...</div>
+                ) : mentorAttendanceRecords.length === 0 ? (
+                  <div className="text-center py-12">
+                    <CalendarIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                    <p className="text-gray-500 mb-2">No mentor attendance records found</p>
+                    <p className="text-sm text-gray-400">Your mentor will enter attendance records here</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {mentorAttendanceRecords.map((record) => (
+                      <div key={record.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-2">
+                              <h3 className="font-semibold text-gray-900">{record.month}</h3>
+                              <Badge variant="outline">{record.semester}</Badge>
+                              <Badge variant="outline">{record.academic_year}</Badge>
+                              <Badge 
+                                className={
+                                  record.attendance_percentage >= 75 
+                                    ? 'bg-green-100 text-green-800' 
+                                    : record.attendance_percentage >= 60 
+                                      ? 'bg-yellow-100 text-yellow-800' 
+                                      : 'bg-red-100 text-red-800'
+                                }
+                              >
+                                {record.attendance_percentage.toFixed(2)}%
+                              </Badge>
+                            </div>
+                            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+                              <div>
+                                <span className="text-gray-600">Total Classes:</span>
+                                <span className="ml-1 font-medium">{record.total_classes}</span>
+                              </div>
+                              <div>
+                                <span className="text-gray-600">Classes Attended:</span>
+                                <span className="ml-1 font-medium">{record.classes_attended}</span>
+                              </div>
+                              <div>
+                                <span className="text-gray-600">Attendance %:</span>
+                                <span className="ml-1 font-medium">{record.attendance_percentage.toFixed(2)}%</span>
+                              </div>
+                            </div>
+                            {record.remarks && (
+                              <div className="mt-2 text-sm text-gray-600">
+                                <span className="font-medium">Remarks:</span> {record.remarks}
+                              </div>
+                            )}
+                            <div className="mt-2 text-xs text-gray-500">
+                              Last updated: {new Date(record.updated_at).toLocaleString()} by {record.mentor_name || 'Unknown'}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>

@@ -19,11 +19,12 @@ import io
 import base64
 import random
 from decimal import Decimal
-from .models import User, Attendance, Department, Subject, Section, AttendancePortalControl, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment
+from .models import User, Attendance, Department, Subject, Section, AttendancePortalControl, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord
 from .serializers import (
     RegisterSerializer, LoginSerializer, AttendanceSerializer, UserSerializer,
     DepartmentSerializer, SubjectSerializer, SectionSerializer, FacultyDepartmentSectionSerializer,
     QRAttendanceSessionSerializer, QRAttendanceRecordSerializer, MentorStudentAssignmentSerializer,
+    StudentAcademicRecordSerializer, MentorAttendanceRecordSerializer,
 )
 
 
@@ -2536,3 +2537,218 @@ def mentor_students_view(request, mentor_id=None):
         })
 
     return Response(students)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def student_academic_records_view(request, student_id):
+    """Get or create academic records for a specific student."""
+    is_mentor = request.user.role == 'mentor'
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+
+    if not is_mentor and not is_admin:
+        return Response({"detail": "Not authorized."}, status=403)
+
+    # Verify mentor is assigned to this student
+    if is_mentor:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+            if not MentorStudentAssignment.objects.filter(mentor=request.user, student=student).exists():
+                return Response({"detail": "You are not assigned to this student."}, status=403)
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+    else:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+
+    if request.method == 'GET':
+        records = StudentAcademicRecord.objects.filter(student=student).order_by('-academic_year', 'semester', 'course_name')
+        serializer = StudentAcademicRecordSerializer(records, many=True)
+        return Response(serializer.data)
+
+    elif request.method == 'POST':
+        data = request.data.copy()
+        data['student'] = student_id
+        data['updated_by'] = request.user.id
+        
+        serializer = StudentAcademicRecordSerializer(data=data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def student_academic_record_detail_view(request, student_id, record_id):
+    """Get, update or delete a specific academic record."""
+    is_mentor = request.user.role == 'mentor'
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+
+    if not is_mentor and not is_admin:
+        return Response({"detail": "Not authorized."}, status=403)
+
+    # Verify mentor is assigned to this student
+    if is_mentor:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+            if not MentorStudentAssignment.objects.filter(mentor=request.user, student=student).exists():
+                return Response({"detail": "You are not assigned to this student."}, status=403)
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+    else:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+
+    try:
+        record = StudentAcademicRecord.objects.get(id=record_id, student=student)
+    except StudentAcademicRecord.DoesNotExist:
+        return Response({"detail": "Academic record not found."}, status=404)
+
+    if request.method == 'GET':
+        serializer = StudentAcademicRecordSerializer(record)
+        return Response(serializer.data)
+
+    elif request.method == 'PUT':
+        data = request.data.copy()
+        data['updated_by'] = request.user.id
+        
+        serializer = StudentAcademicRecordSerializer(record, data=data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+
+    elif request.method == 'DELETE':
+        if not is_admin:
+            return Response({"detail": "Only admin can delete academic records."}, status=403)
+        record.delete()
+        return Response(status=204)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def mentor_attendance_records_view(request, student_id):
+    """Get or create mentor attendance records for a specific student."""
+    is_mentor = request.user.role == 'mentor'
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    is_student = request.user.role == 'student'
+
+    if not is_mentor and not is_admin and not is_student:
+        return Response({"detail": "Not authorized."}, status=403)
+
+    # Verify access permissions
+    if is_mentor:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+            if not MentorStudentAssignment.objects.filter(mentor=request.user, student=student).exists():
+                return Response({"detail": "You are not assigned to this student."}, status=403)
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+    elif is_student:
+        if request.user.id != student_id:
+            return Response({"detail": "Students can only view their own attendance records."}, status=403)
+        student = request.user
+    else:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+
+    if request.method == 'GET':
+        records = MentorAttendanceRecord.objects.filter(student=student).order_by('-academic_year', 'semester', 'month')
+        serializer = MentorAttendanceRecordSerializer(records, many=True)
+        return Response(serializer.data)
+
+    elif request.method == 'POST':
+        if not is_mentor and not is_admin:
+            return Response({"detail": "Only mentors and admins can create attendance records."}, status=403)
+        
+        data = request.data.copy()
+        data['student'] = student_id
+        data['mentor'] = request.user.id
+        
+        # Calculate attendance percentage if not provided
+        if 'attendance_percentage' not in data or not data['attendance_percentage']:
+            total_classes = int(data.get('total_classes', 0))
+            classes_attended = int(data.get('classes_attended', 0))
+            if total_classes > 0:
+                data['attendance_percentage'] = round((classes_attended / total_classes) * 100, 2)
+            else:
+                data['attendance_percentage'] = 0
+        
+        serializer = MentorAttendanceRecordSerializer(data=data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def mentor_attendance_record_detail_view(request, student_id, record_id):
+    """Get, update or delete a specific mentor attendance record."""
+    is_mentor = request.user.role == 'mentor'
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    is_student = request.user.role == 'student'
+
+    if not is_mentor and not is_admin and not is_student:
+        return Response({"detail": "Not authorized."}, status=403)
+
+    # Verify access permissions
+    if is_mentor:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+            if not MentorStudentAssignment.objects.filter(mentor=request.user, student=student).exists():
+                return Response({"detail": "You are not assigned to this student."}, status=403)
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+    elif is_student:
+        if request.user.id != student_id:
+            return Response({"detail": "Students can only view their own attendance records."}, status=403)
+        student = request.user
+    else:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+
+    try:
+        record = MentorAttendanceRecord.objects.get(id=record_id, student=student)
+    except MentorAttendanceRecord.DoesNotExist:
+        return Response({"detail": "Attendance record not found."}, status=404)
+
+    if request.method == 'GET':
+        serializer = MentorAttendanceRecordSerializer(record)
+        return Response(serializer.data)
+
+    elif request.method == 'PUT':
+        if not is_mentor and not is_admin:
+            return Response({"detail": "Only mentors and admins can update attendance records."}, status=403)
+        
+        data = request.data.copy()
+        
+        # Calculate attendance percentage if not provided
+        if 'attendance_percentage' not in data or not data['attendance_percentage']:
+            total_classes = int(data.get('total_classes', record.total_classes))
+            classes_attended = int(data.get('classes_attended', record.classes_attended))
+            if total_classes > 0:
+                data['attendance_percentage'] = round((classes_attended / total_classes) * 100, 2)
+            else:
+                data['attendance_percentage'] = 0
+        
+        serializer = MentorAttendanceRecordSerializer(record, data=data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+
+    elif request.method == 'DELETE':
+        if not is_admin:
+            return Response({"detail": "Only admin can delete attendance records."}, status=403)
+        record.delete()
+        return Response(status=204)

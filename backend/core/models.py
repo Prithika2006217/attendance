@@ -202,3 +202,56 @@ class MentorStudentAssignment(models.Model):
 
     def __str__(self):
         return f"{self.mentor.full_name or self.mentor.username} mentoring {self.student.full_name or self.student.username}"
+
+
+class StudentAcademicRecord(models.Model):
+    """Model to store student academic records for mentor dashboard."""
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='academic_records')
+    course_name = models.CharField(max_length=200, help_text='Name of the course/subject')
+    semester = models.CharField(max_length=50, help_text='Semester (e.g., 1-1, 1-2, 2-1, 2-2)')
+    academic_year = models.CharField(max_length=20, help_text='Academic year (e.g., 2023-24)')
+    mid1_marks = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text='Mid-1 marks')
+    mid2_marks = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text='Mid-2 marks')
+    cie_marks = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text='CIE/Internal marks')
+    total_internal_marks = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text='Total internal marks')
+    marks_obtained = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text='Marks obtained')
+    credits_obtained = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text='Credits obtained')
+    sgpa = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text='SGPA for the semester')
+    audit_course_cleared = models.BooleanField(default=False, help_text='Whether audit course is cleared')
+    grade = models.CharField(max_length=10, blank=True, null=True, help_text='Grade obtained (O, A+, A, B+, B, C, etc.)')
+    remarks = models.TextField(blank=True, null=True, help_text='Additional remarks about the academic performance')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='updated_academic_records', help_text='Mentor who last updated this record')
+
+    class Meta:
+        verbose_name = 'Student Academic Record'
+        verbose_name_plural = 'Student Academic Records'
+        ordering = ['-academic_year', 'semester', 'course_name']
+
+    def __str__(self):
+        return f"{self.student.full_name or self.student.username} - {self.course_name} ({self.semester} - {self.academic_year})"
+
+
+class MentorAttendanceRecord(models.Model):
+    """Model to store mentor-entered attendance records for students."""
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='mentor_attendance_records')
+    mentor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='entered_attendance_records')
+    month = models.CharField(max_length=20, help_text='Month (e.g., January, February)')
+    semester = models.CharField(max_length=50, help_text='Semester (e.g., 1-1, 1-2, 2-1, 2-2)')
+    academic_year = models.CharField(max_length=20, help_text='Academic year (e.g., 2023-24)')
+    total_classes = models.IntegerField(default=0, help_text='Total number of classes conducted')
+    classes_attended = models.IntegerField(default=0, help_text='Number of classes attended by student')
+    attendance_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0, help_text='Attendance percentage')
+    remarks = models.TextField(blank=True, null=True, help_text='Additional remarks about attendance')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Mentor Attendance Record'
+        verbose_name_plural = 'Mentor Attendance Records'
+        ordering = ['-academic_year', 'semester', 'month']
+        unique_together = [['student', 'month', 'semester', 'academic_year']]
+
+    def __str__(self):
+        return f"{self.student.full_name or self.student.username} - {self.month} {self.semester} ({self.academic_year})"
