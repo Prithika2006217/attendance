@@ -32,13 +32,28 @@ def _sections_list_to_csv(secs) -> str:
     """Turn a list/tuple (or single value) into comma-separated unique section names."""
     if secs is None:
         return ''
-    if isinstance(secs, (list, tuple)):
+    
+    # Handle JSON string input
+    if isinstance(secs, str):
+        try:
+            import json
+            parsed = json.loads(secs)
+            if isinstance(parsed, (list, tuple)):
+                items = parsed
+            else:
+                items = [parsed]
+        except (json.JSONDecodeError, ValueError):
+            items = [secs]
+    elif isinstance(secs, (list, tuple)):
         items = secs
     else:
         items = [secs]
+    
     seen = []
     for x in items:
         s = str(x).strip()
+        # Remove any JSON string escaping artifacts
+        s = s.replace('\\', '').replace('"', '').replace('[', '').replace(']', '')
         if s and s not in seen:
             seen.append(s)
     return ','.join(seen)
@@ -647,11 +662,15 @@ def user_detail_view(request, pk):
         return Response(data)
 
     elif request.method == 'PATCH':
-        # Mentors can only view, not edit student profiles
-        if mentor_can_view_student and not is_admin and not is_self and not faculty_can_edit_student:
-            return Response({"detail": "Mentors can only view student profiles, not edit them."}, status=403)
-        
         data = request.data.copy()
+        
+        # Mentors can edit complete student profile
+        if mentor_can_view_student and not is_admin and not is_self and not faculty_can_edit_student:
+            # Mentors can edit all fields except password, is_detained, username, email, and photo
+            mentor_restricted_fields = ['password', 'is_detained', 'username', 'email', 'photo']
+            for field in mentor_restricted_fields:
+                data.pop(field, None)
+        
         new_password = (data.pop('new_password', None) or data.pop('password', None) or '').strip()
         current_password = (data.pop('current_password', None) or '').strip()
 
@@ -686,6 +705,43 @@ def user_detail_view(request, pk):
                 return Response({"username": ["This username is already taken."]}, status=400)
             target.username = new_username
             target.save(update_fields=['username'])
+
+        # Implement field-level permission restrictions for students (only when student is editing themselves)
+        if target.role == 'student' and is_self:
+            # Basic Information - Only admin can edit after creation
+            basic_info_fields = ['full_name', 'roll_number', 'phone', 'department', 'section', 'year']
+            for field in basic_info_fields:
+                if field in data:
+                    data.pop(field)
+            
+            # Academic Information - Students can add once, then only mentor can edit
+            academic_info_fields = ['admission_category', 'eapcet_rank', 'ecet_rank', 'reservation_category', 'scholarship']
+            for field in academic_info_fields:
+                if field in data:
+                    # Check if field already has a value
+                    if getattr(target, field):
+                        data.pop(field)  # Remove if already set
+            
+            # Guardian Information - Students can add once, then only mentor can edit
+            guardian_info_fields = ['guardian_name', 'guardian_relation', 'guardian_mobile', 'occupation', 'income']
+            for field in guardian_info_fields:
+                if field in data:
+                    if getattr(target, field):
+                        data.pop(field)  # Remove if already set
+            
+            # Educational Profile - Students can add once, then only mentor can edit
+            educational_profile_fields = [
+                'ssc_board', 'ssc_school', 'ssc_percentage', 'ssc_class',
+                'intermediate_board', 'intermediate_college', 'intermediate_percentage', 'intermediate_class',
+                'medium_of_instruction', 'local', 'mother_tongue'
+            ]
+            for field in educational_profile_fields:
+                if field in data:
+                    if getattr(target, field):
+                        data.pop(field)  # Remove if already set
+            
+            # Address Information, Achievements, Hobbies, Areas of Interest, Other Information - Editable by both
+            # No restrictions needed for these fields
 
         if 'departments' in data:
             depts = data.get('departments')

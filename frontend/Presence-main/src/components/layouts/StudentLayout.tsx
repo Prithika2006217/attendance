@@ -39,7 +39,11 @@ import {
   Save,
   Lock,
   Scan,
-  Camera
+  Camera,
+  Award,
+  Plus,
+  Trash2,
+  FileText
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { db } from '@/lib/mockDb';
@@ -65,6 +69,7 @@ export const StudentLayout: React.FC = () => {
     date_of_joining: string | null;
     guardian_name: string | null;
     guardian_relation: string | null;
+    guardian_mobile: string | null;
     occupation: string | null;
     income: number | null;
     address: string | null;
@@ -108,6 +113,7 @@ export const StudentLayout: React.FC = () => {
     date_of_joining: '',
     guardian_name: '',
     guardian_relation: '',
+    guardian_mobile: '',
     occupation: '',
     income: '',
     address: '',
@@ -155,6 +161,43 @@ export const StudentLayout: React.FC = () => {
   const [changePasswordForm, setChangePasswordForm] = useState({ current_password: '', new_password: '', confirm_password: '' });
   const [apiDepartments, setApiDepartments] = useState<Array<{ id: number; name: string; code: string }>>([]);
   const [apiSections, setApiSections] = useState<Array<{ id: number; name: string }>>([]);
+  
+  // Achievements state
+  const [achievements, setAchievements] = useState<{
+    id: number;
+    achievement_type: string;
+    activity_name: string;
+    event_name: string;
+    participation_level: string;
+    achievement_details: string;
+    date_achieved: string;
+    created_at: string;
+    updated_at: string;
+  }[]>([]);
+  const [achievementsLoading, setAchievementsLoading] = useState(false);
+  const [achievementDialogOpen, setAchievementDialogOpen] = useState(false);
+  const [editingAchievement, setEditingAchievement] = useState<typeof achievements[0] | null>(null);
+  const [achievementForm, setAchievementForm] = useState({
+    achievement_type: '',
+    activity_name: '',
+    event_name: '',
+    participation_level: '',
+    achievement_details: '',
+    date_achieved: ''
+  });
+  
+  // Mentor Remarks state
+  const [mentorRemarks, setMentorRemarks] = useState<{
+    id: number;
+    mentor_name: string;
+    mentor_email: string;
+    remark_date: string;
+    mentoring_area: string;
+    remarks: string;
+    created_at: string;
+    updated_at: string;
+  }[]>([]);
+  const [mentorRemarksLoading, setMentorRemarksLoading] = useState(false);
 
   /** QR Attendance state for students */
   const [qrScanningOpen, setQrScanningOpen] = useState(false);
@@ -228,6 +271,7 @@ export const StudentLayout: React.FC = () => {
         date_of_joining: profile.date_of_joining || '',
         guardian_name: profile.guardian_name || '',
         guardian_relation: profile.guardian_relation || '',
+        guardian_mobile: profile.guardian_mobile || '',
         occupation: profile.occupation || '',
         income: profile.income ? String(profile.income) : '',
         address: profile.address || '',
@@ -279,6 +323,7 @@ export const StudentLayout: React.FC = () => {
       if (profileEditForm.date_of_joining) formData.append('date_of_joining', profileEditForm.date_of_joining);
       if (profileEditForm.guardian_name) formData.append('guardian_name', profileEditForm.guardian_name);
       if (profileEditForm.guardian_relation) formData.append('guardian_relation', profileEditForm.guardian_relation);
+      if (profileEditForm.guardian_mobile) formData.append('guardian_mobile', profileEditForm.guardian_mobile);
       if (profileEditForm.occupation) formData.append('occupation', profileEditForm.occupation);
       if (profileEditForm.income) formData.append('income', profileEditForm.income);
       if (profileEditForm.address) formData.append('address', profileEditForm.address);
@@ -420,6 +465,148 @@ export const StudentLayout: React.FC = () => {
       loadMentorAttendance();
     }
   }, [activeTab, numericId]);
+
+  const loadAchievements = async () => {
+    if (numericId == null) return;
+    setAchievementsLoading(true);
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${numericId}/achievements/`));
+      if (res.ok) {
+        const data = await res.json();
+        setAchievements(Array.isArray(data) ? data : []);
+      } else {
+        setAchievements([]);
+      }
+    } catch (error) {
+      setAchievements([]);
+    } finally {
+      setAchievementsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'achievements') {
+      loadAchievements();
+    }
+  }, [activeTab, numericId]);
+
+  const loadMentorRemarks = async () => {
+    if (numericId == null) return;
+    setMentorRemarksLoading(true);
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${numericId}/mentor-remarks/`));
+      if (res.ok) {
+        const data = await res.json();
+        setMentorRemarks(Array.isArray(data) ? data : []);
+      } else {
+        setMentorRemarks([]);
+      }
+    } catch (error) {
+      setMentorRemarks([]);
+    } finally {
+      setMentorRemarksLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'achievements') {
+      loadMentorRemarks();
+    }
+  }, [activeTab, numericId]);
+
+  const handleOpenAchievementDialog = (achievement = null) => {
+    if (achievement) {
+      setEditingAchievement(achievement);
+      setAchievementForm({
+        achievement_type: achievement.achievement_type,
+        activity_name: achievement.activity_name,
+        event_name: achievement.event_name,
+        participation_level: achievement.participation_level,
+        achievement_details: achievement.achievement_details,
+        date_achieved: achievement.date_achieved
+      });
+    } else {
+      setEditingAchievement(null);
+      setAchievementForm({
+        achievement_type: '',
+        activity_name: '',
+        event_name: '',
+        participation_level: '',
+        achievement_details: '',
+        date_achieved: ''
+      });
+    }
+    setAchievementDialogOpen(true);
+  };
+
+  const handleSaveAchievement = async () => {
+    if (numericId == null) return;
+    try {
+      const url = editingAchievement
+        ? apiUrl(`/api/students/${numericId}/achievements/${editingAchievement.id}/`)
+        : apiUrl(`/api/students/${numericId}/achievements/`);
+      
+      const method = editingAchievement ? 'PUT' : 'POST';
+      
+      const res = await authFetch(url, {
+        method,
+        body: JSON.stringify(achievementForm)
+      });
+
+      if (res.ok) {
+        setAchievementDialogOpen(false);
+        loadAchievements();
+        toast({ 
+          title: editingAchievement ? 'Achievement updated' : 'Achievement added',
+          description: 'Your achievement has been saved successfully.' 
+        });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast({ 
+          title: 'Failed to save achievement', 
+          description: err.detail || 'Please try again.', 
+          variant: 'destructive' 
+        });
+      }
+    } catch {
+      toast({ 
+        title: 'Failed to save achievement', 
+        description: 'Network error. Please try again.', 
+        variant: 'destructive' 
+      });
+    }
+  };
+
+  const handleDeleteAchievement = async (achievementId: number) => {
+    if (numericId == null) return;
+    if (!confirm('Are you sure you want to delete this achievement?')) return;
+    
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${numericId}/achievements/${achievementId}/`), {
+        method: 'DELETE'
+      });
+
+      if (res.ok) {
+        loadAchievements();
+        toast({ 
+          title: 'Achievement deleted', 
+          description: 'Your achievement has been removed.' 
+        });
+      } else {
+        toast({ 
+          title: 'Failed to delete achievement', 
+          description: 'Please try again.', 
+          variant: 'destructive' 
+        });
+      }
+    } catch {
+      toast({ 
+        title: 'Failed to delete achievement', 
+        description: 'Network error. Please try again.', 
+        variant: 'destructive' 
+      });
+    }
+  };
 
   useEffect(() => {
     if (numericId == null) return;
@@ -840,6 +1027,7 @@ export const StudentLayout: React.FC = () => {
             <TabsTrigger value="subjects">Subjects</TabsTrigger>
             <TabsTrigger value="student-details">Student Details</TabsTrigger>
             <TabsTrigger value="educational-profile">Educational Profile</TabsTrigger>
+            <TabsTrigger value="achievements">Achievements</TabsTrigger>
             <TabsTrigger value="profile">Profile</TabsTrigger>
           </TabsList>
           {isStudentAttendanceFrozen && (
@@ -1394,6 +1582,212 @@ export const StudentLayout: React.FC = () => {
             </Card>
           </TabsContent>
 
+          {/* Achievements Tab */}
+          <TabsContent value="achievements" className="space-y-6 mt-6">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div>
+                  <CardTitle>My Achievements</CardTitle>
+                  <CardDescription>Extra-curricular and co-curricular activities, representations, and achievements</CardDescription>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => handleOpenAchievementDialog(null)}>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add Achievement
+                </Button>
+              </CardHeader>
+              <CardContent>
+                {achievementsLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading achievements...</p>
+                ) : achievements.length === 0 ? (
+                  <div className="text-center py-8">
+                    <Award className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                    <p className="text-sm text-muted-foreground">No achievements recorded yet.</p>
+                    <p className="text-xs text-muted-foreground mt-1">Click "Add Achievement" to record your accomplishments.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {achievements.map((achievement) => (
+                      <div key={achievement.id} className="border rounded-lg p-4 hover:bg-muted/50 transition-colors">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-2">
+                              <Badge variant="secondary" className="capitalize">
+                                {achievement.achievement_type.replace('_', ' ')}
+                              </Badge>
+                              <Badge variant="outline" className="capitalize">
+                                {achievement.participation_level}
+                              </Badge>
+                            </div>
+                            <h4 className="font-semibold text-lg">{achievement.activity_name}</h4>
+                            <p className="text-sm text-muted-foreground mb-2">{achievement.event_name}</p>
+                            <p className="text-sm mb-2">{achievement.achievement_details}</p>
+                            <p className="text-xs text-muted-foreground">
+                              Date: {format(parseISO(achievement.date_achieved), 'PPP')}
+                            </p>
+                          </div>
+                          <div className="flex gap-2">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleOpenAchievementDialog(achievement)}
+                            >
+                              <Edit className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDeleteAchievement(achievement.id)}
+                            >
+                              <Trash2 className="w-4 h-4 text-destructive" />
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Mentor Remarks Section - Read Only for Students */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Mentor Remarks</CardTitle>
+                <CardDescription>Feedback and guidance from your assigned mentor</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {mentorRemarksLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading mentor remarks...</p>
+                ) : mentorRemarks.length === 0 ? (
+                  <div className="text-center py-8">
+                    <FileText className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                    <p className="text-sm text-muted-foreground">No mentor remarks recorded yet.</p>
+                    <p className="text-xs text-muted-foreground mt-1">Your mentor will add remarks here to provide guidance and feedback.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {mentorRemarks.map((remark) => (
+                      <div key={remark.id} className="border rounded-lg p-4 bg-muted/30">
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <Badge variant="secondary" className="capitalize">
+                              {remark.mentoring_area}
+                            </Badge>
+                            <span className="text-xs text-muted-foreground">
+                              {format(parseISO(remark.remark_date), 'PPP')}
+                            </span>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {format(parseISO(remark.created_at), 'PPP')}
+                          </p>
+                        </div>
+                        <p className="text-sm mb-2">{remark.remarks}</p>
+                        <p className="text-xs text-muted-foreground">
+                          By: {remark.mentor_name} ({remark.mentor_email})
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Achievement Dialog */}
+            <Dialog open={achievementDialogOpen} onOpenChange={setAchievementDialogOpen}>
+              <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>
+                    {editingAchievement ? 'Edit Achievement' : 'Add New Achievement'}
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="achievement_type">Achievement Type *</Label>
+                      <Select
+                        value={achievementForm.achievement_type}
+                        onValueChange={(value) => setAchievementForm({ ...achievementForm, achievement_type: value })}
+                      >
+                        <SelectTrigger id="achievement_type">
+                          <SelectValue placeholder="Select type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="extra_curricular">Extra-Curricular</SelectItem>
+                          <SelectItem value="co_curricular">Co-Curricular</SelectItem>
+                          <SelectItem value="representation">Representation</SelectItem>
+                          <SelectItem value="participation">Participation</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="date_achieved">Date Achieved *</Label>
+                      <Input
+                        id="date_achieved"
+                        type="date"
+                        value={achievementForm.date_achieved}
+                        onChange={(e) => setAchievementForm({ ...achievementForm, date_achieved: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="activity_name">Activity Name *</Label>
+                    <Input
+                      id="activity_name"
+                      placeholder="e.g., Sports, Cultural Event, Technical Symposium"
+                      value={achievementForm.activity_name}
+                      onChange={(e) => setAchievementForm({ ...achievementForm, activity_name: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="event_name">Event Name *</Label>
+                    <Input
+                      id="event_name"
+                      placeholder="e.g., Annual Sports Meet, Inter-College Cultural Fest"
+                      value={achievementForm.event_name}
+                      onChange={(e) => setAchievementForm({ ...achievementForm, event_name: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="participation_level">Participation Level *</Label>
+                    <Select
+                      value={achievementForm.participation_level}
+                      onValueChange={(value) => setAchievementForm({ ...achievementForm, participation_level: value })}
+                    >
+                      <SelectTrigger id="participation_level">
+                        <SelectValue placeholder="Select level" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="College">College</SelectItem>
+                        <SelectItem value="District">District</SelectItem>
+                        <SelectItem value="State">State</SelectItem>
+                        <SelectItem value="National">National</SelectItem>
+                        <SelectItem value="International">International</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="achievement_details">Achievement Details *</Label>
+                    <textarea
+                      id="achievement_details"
+                      className="w-full min-h-[100px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                      placeholder="Describe your achievement, awards received, positions won, etc."
+                      value={achievementForm.achievement_details}
+                      onChange={(e) => setAchievementForm({ ...achievementForm, achievement_details: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setAchievementDialogOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button onClick={handleSaveAchievement}>
+                    {editingAchievement ? 'Update Achievement' : 'Add Achievement'}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </TabsContent>
+
           {/* Profile Tab */}
           <TabsContent value="profile">
             <Card>
@@ -1471,6 +1865,10 @@ export const StudentLayout: React.FC = () => {
                       <p className="text-lg font-medium">{apiProfile?.guardian_relation || '–'}</p>
                     </div>
                     <div>
+                      <label className="text-sm font-medium text-muted-foreground">Guardian Mobile</label>
+                      <p className="text-lg font-medium">{apiProfile?.guardian_mobile || '–'}</p>
+                    </div>
+                    <div>
                       <label className="text-sm font-medium text-muted-foreground">Occupation</label>
                       <p className="text-lg font-medium">{apiProfile?.occupation || '–'}</p>
                     </div>
@@ -1527,9 +1925,13 @@ export const StudentLayout: React.FC = () => {
                       {apiProfile?.photo ? (
                         <div className="mt-2">
                           <img 
-                            src={apiProfile.photo} 
+                            src={apiProfile.photo.startsWith('http') ? apiProfile.photo : apiUrl(apiProfile.photo)}
                             alt="Student Photo" 
                             className="w-32 h-32 object-cover rounded-lg border"
+                            onError={(e) => {
+                              console.error('Photo load error:', e);
+                              (e.target as HTMLImageElement).style.display = 'none';
+                            }}
                           />
                         </div>
                       ) : (
@@ -1677,6 +2079,10 @@ export const StudentLayout: React.FC = () => {
                             <SelectItem value="Guardian">Guardian</SelectItem>
                           </SelectContent>
                         </Select>
+                      </div>
+                      <div className="grid gap-2">
+                        <Label>Guardian Mobile</Label>
+                        <Input value={profileEditForm.guardian_mobile} onChange={e => setProfileEditForm(f => ({ ...f, guardian_mobile: e.target.value }))} placeholder="Guardian mobile number" />
                       </div>
                       <div className="grid gap-2">
                         <Label>Occupation</Label>
@@ -2071,6 +2477,10 @@ export const StudentLayout: React.FC = () => {
                       <p className="text-lg font-medium">{apiProfile?.guardian_relation || '–'}</p>
                     </div>
                     <div>
+                      <label className="text-sm font-medium text-muted-foreground">Guardian Mobile</label>
+                      <p className="text-lg font-medium">{apiProfile?.guardian_mobile || '–'}</p>
+                    </div>
+                    <div>
                       <label className="text-sm font-medium text-muted-foreground">Occupation</label>
                       <p className="text-lg font-medium">{apiProfile?.occupation || '–'}</p>
                     </div>
@@ -2127,9 +2537,13 @@ export const StudentLayout: React.FC = () => {
                       {apiProfile?.photo ? (
                         <div className="mt-2">
                           <img 
-                            src={apiProfile.photo} 
+                            src={apiProfile.photo.startsWith('http') ? apiProfile.photo : apiUrl(apiProfile.photo)}
                             alt="Student Photo" 
                             className="w-32 h-32 object-cover rounded-lg border"
+                            onError={(e) => {
+                              console.error('Photo load error:', e);
+                              (e.target as HTMLImageElement).style.display = 'none';
+                            }}
                           />
                         </div>
                       ) : (

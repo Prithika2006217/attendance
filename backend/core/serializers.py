@@ -1,6 +1,6 @@
 
 from rest_framework import serializers
-from .models import User, Attendance, Department, Subject, Section, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord
+from .models import User, Attendance, Department, Subject, Section, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord, StudentAchievement, MentorRemark
 from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -17,7 +17,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             'department', 'section', 'sections', 'year',
             'is_detained',
             'assigned_subject_ids', 'subjects',
-            'date_of_birth', 'date_of_joining', 'guardian_name', 'guardian_relation',
+            'date_of_birth', 'date_of_joining', 'guardian_name', 'guardian_relation', 'guardian_mobile',
             'occupation', 'income', 'address', 'city', 'state', 'pincode',
             'admission_category', 'eapcet_rank', 'ecet_rank', 'reservation_category',
             'scholarship', 'residential_details', 'mode_of_transport', 'photo',
@@ -122,7 +122,7 @@ class UserSerializer(serializers.ModelSerializer):
             'department', 'departments', 'section', 'sections', 'year',
             'is_detained',
             'assigned_subject_ids', 'subjects', 'faculty_department_sections',
-            'date_of_birth', 'date_of_joining', 'guardian_name', 'guardian_relation',
+            'date_of_birth', 'date_of_joining', 'guardian_name', 'guardian_relation', 'guardian_mobile',
             'occupation', 'income', 'address', 'city', 'state', 'pincode',
             'admission_category', 'eapcet_rank', 'ecet_rank', 'reservation_category',
             'scholarship', 'residential_details', 'mode_of_transport', 'photo',
@@ -139,6 +139,7 @@ class UserSerializer(serializers.ModelSerializer):
             'date_of_joining': {'required': False},
             'guardian_name': {'required': False},
             'guardian_relation': {'required': False},
+            'guardian_mobile': {'required': False},
             'occupation': {'required': False},
             'income': {'required': False},
             'address': {'required': False},
@@ -200,9 +201,16 @@ class UserSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         """Custom representation to handle photo field."""
         data = super().to_representation(instance)
-        # Handle photo field - return URL if exists, null otherwise
-        if instance.photo:
-            data['photo'] = instance.photo.url if hasattr(instance.photo, 'url') else str(instance.photo)
+        # Handle photo field - return full URL if exists, null otherwise
+        if instance.photo and hasattr(instance.photo, 'url'):
+            # Get the URL from the image field
+            photo_url = instance.photo.url
+            # Ensure it starts with /media/
+            if not photo_url.startswith('/media/'):
+                photo_url = f"/media/{photo_url.lstrip('/')}"
+            data['photo'] = photo_url
+        else:
+            data['photo'] = None
         return data
 
     def update(self, instance, validated_data):
@@ -441,3 +449,55 @@ class MentorAttendanceRecordSerializer(serializers.ModelSerializer):
 
     def get_mentor_name(self, obj):
         return obj.mentor.full_name or obj.mentor.username
+
+
+class StudentAchievementSerializer(serializers.ModelSerializer):
+    """Serializer for student achievements."""
+    student_name = serializers.SerializerMethodField(read_only=True)
+    student_roll_number = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = StudentAchievement
+        fields = (
+            'id', 'student', 'student_name', 'student_roll_number',
+            'achievement_type', 'activity_name', 'event_name', 
+            'participation_level', 'achievement_details', 'date_achieved',
+            'created_at', 'updated_at'
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at')
+
+    def get_student_name(self, obj):
+        return obj.student.full_name or obj.student.username
+
+    def get_student_roll_number(self, obj):
+        return obj.student.roll_number
+
+
+class MentorRemarkSerializer(serializers.ModelSerializer):
+    """Serializer for mentor remarks."""
+    student_name = serializers.SerializerMethodField(read_only=True)
+    student_roll_number = serializers.SerializerMethodField(read_only=True)
+    mentor_name = serializers.SerializerMethodField(read_only=True)
+    mentor_email = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = MentorRemark
+        fields = (
+            'id', 'student', 'student_name', 'student_roll_number',
+            'mentor', 'mentor_name', 'mentor_email',
+            'remark_date', 'mentoring_area', 'remarks',
+            'created_at', 'updated_at'
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at', 'student', 'mentor')
+
+    def get_student_name(self, obj):
+        return obj.student.full_name or obj.student.username
+
+    def get_student_roll_number(self, obj):
+        return obj.student.roll_number
+
+    def get_mentor_name(self, obj):
+        return obj.mentor.full_name or obj.mentor.username
+
+    def get_mentor_email(self, obj):
+        return obj.mentor.email

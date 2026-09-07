@@ -66,6 +66,7 @@ class User(AbstractUser):
     date_of_joining = models.DateField(blank=True, null=True)
     guardian_name = models.CharField(max_length=150, blank=True, null=True, help_text='Father/Mother/Guardian name')
     guardian_relation = models.CharField(max_length=50, blank=True, null=True, help_text='Relation to guardian (Father/Mother/Guardian)')
+    guardian_mobile = models.CharField(max_length=20, blank=True, null=True, help_text='Guardian mobile number')
     occupation = models.CharField(max_length=100, blank=True, null=True)
     income = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
     address = models.TextField(blank=True, null=True, help_text='Permanent address')
@@ -255,3 +256,57 @@ class MentorAttendanceRecord(models.Model):
 
     def __str__(self):
         return f"{self.student.full_name or self.student.username} - {self.month} {self.semester} ({self.academic_year})"
+
+
+class StudentAchievement(models.Model):
+    """Model to store student achievements for extra-curricular and co-curricular activities."""
+    ACHIEVEMENT_TYPE_CHOICES = (
+        ('extra_curricular', 'Extra-Curricular'),
+        ('co_curricular', 'Co-Curricular'),
+        ('representation', 'Representation'),
+        ('participation', 'Participation'),
+    )
+    
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='achievement_records')
+    achievement_type = models.CharField(max_length=50, choices=ACHIEVEMENT_TYPE_CHOICES, help_text='Type of achievement')
+    activity_name = models.CharField(max_length=200, help_text='Name of the activity/event')
+    event_name = models.CharField(max_length=200, help_text='Specific event name')
+    participation_level = models.CharField(max_length=100, help_text='Level of participation (e.g., College, District, State, National)')
+    achievement_details = models.TextField(help_text='Details about the achievement')
+    date_achieved = models.DateField(help_text='Date when the achievement was made')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Student Achievement'
+        verbose_name_plural = 'Student Achievements'
+        ordering = ['-date_achieved', '-created_at']
+
+    def __str__(self):
+        return f"{self.student.full_name or self.student.username} - {self.activity_name} ({self.achievement_type})"
+
+
+class MentorRemark(models.Model):
+    """Model to store mentor remarks for students."""
+    MENTORING_AREA_CHOICES = (
+        ('academic', 'Academic'),
+        ('attendance', 'Attendance'),
+        ('discipline', 'Discipline'),
+        ('other', 'Other'),
+    )
+    
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='mentor_remarks')
+    mentor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='given_remarks')
+    remark_date = models.DateField(help_text='Date of the remark')
+    mentoring_area = models.CharField(max_length=50, choices=MENTORING_AREA_CHOICES, help_text='Area of mentoring')
+    remarks = models.TextField(help_text='Mentor remarks')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Mentor Remark'
+        verbose_name_plural = 'Mentor Remarks'
+        ordering = ['-remark_date', '-created_at']
+
+    def __str__(self):
+        return f"{self.mentor.full_name or self.mentor.username} - {self.student.full_name or self.student.username} ({self.mentoring_area}) - {self.remark_date}"

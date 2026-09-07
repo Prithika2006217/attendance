@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   UserCheck,
   Users,
@@ -54,6 +55,7 @@ type AssignedStudent = {
   date_of_joining: string | null;
   guardian_name: string | null;
   guardian_relation: string | null;
+  guardian_mobile: string | null;
   occupation: string | null;
   income: number | null;
   address: string | null;
@@ -128,6 +130,36 @@ type AcademicRecord = {
   updated_by_name: string | null;
 };
 
+type StudentAchievement = {
+  id: number;
+  student: number;
+  student_name: string;
+  student_roll_number: string | null;
+  achievement_type: string;
+  activity_name: string;
+  event_name: string;
+  participation_level: string;
+  achievement_details: string;
+  date_achieved: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type MentorRemark = {
+  id: number;
+  student: number;
+  student_name: string;
+  student_roll_number: string | null;
+  mentor: number;
+  mentor_name: string;
+  mentor_email: string;
+  remark_date: string;
+  mentoring_area: string;
+  remarks: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export const MentorLayout: React.FC = () => {
   const { user, logout } = useAuth();
   const [activeTab, setActiveTab] = useState('students');
@@ -138,6 +170,8 @@ export const MentorLayout: React.FC = () => {
   const [filterYear, setFilterYear] = useState('');
   const [selectedStudent, setSelectedStudent] = useState<AssignedStudent | null>(null);
   const [studentProfileOpen, setStudentProfileOpen] = useState(false);
+  const [editingStudentProfile, setEditingStudentProfile] = useState(false);
+  const [studentProfileForm, setStudentProfileForm] = useState<Record<string, any>>({});
   const [sortBy, setSortBy] = useState<'name' | 'roll_number' | 'department' | 'year'>('name');
   const [academicRecords, setAcademicRecords] = useState<AcademicRecord[]>([]);
   const [academicRecordsLoading, setAcademicRecordsLoading] = useState(false);
@@ -170,6 +204,18 @@ export const MentorLayout: React.FC = () => {
     classes_attended: '',
     remarks: '',
   });
+  const [studentAchievements, setStudentAchievements] = useState<StudentAchievement[]>([]);
+  const [studentAchievementsLoading, setStudentAchievementsLoading] = useState(false);
+  const [studentAchievementsOpen, setStudentAchievementsOpen] = useState(false);
+  const [mentorRemarks, setMentorRemarks] = useState<MentorRemark[]>([]);
+  const [mentorRemarksLoading, setMentorRemarksLoading] = useState(false);
+  const [mentorRemarksDialogOpen, setMentorRemarksDialogOpen] = useState(false);
+  const [editingMentorRemark, setEditingMentorRemark] = useState<MentorRemark | null>(null);
+  const [mentorRemarkForm, setMentorRemarkForm] = useState({
+    remark_date: '',
+    mentoring_area: '',
+    remarks: ''
+  });
 
   useEffect(() => {
     loadAssignedStudents();
@@ -197,6 +243,199 @@ export const MentorLayout: React.FC = () => {
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadStudentAchievements = async (studentId: number) => {
+    setStudentAchievementsLoading(true);
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${studentId}/achievements/`));
+      if (res.ok) {
+        const data = await res.json();
+        setStudentAchievements(Array.isArray(data) ? data : []);
+      } else {
+        setStudentAchievements([]);
+      }
+    } catch (error) {
+      setStudentAchievements([]);
+    } finally {
+      setStudentAchievementsLoading(false);
+    }
+  };
+
+  const loadMentorRemarks = async (studentId: number) => {
+    setMentorRemarksLoading(true);
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${studentId}/mentor-remarks/`));
+      if (res.ok) {
+        const data = await res.json();
+        setMentorRemarks(Array.isArray(data) ? data : []);
+      } else {
+        setMentorRemarks([]);
+      }
+    } catch (error) {
+      setMentorRemarks([]);
+    } finally {
+      setMentorRemarksLoading(false);
+    }
+  };
+
+  const handleOpenMentorRemarkDialog = (remark = null) => {
+    if (remark) {
+      setEditingMentorRemark(remark);
+      setMentorRemarkForm({
+        remark_date: remark.remark_date,
+        mentoring_area: remark.mentoring_area,
+        remarks: remark.remarks
+      });
+    } else {
+      setEditingMentorRemark(null);
+      // Calculate default date based on 15-day intervals
+      let defaultDate = new Date().toISOString().split('T')[0];
+      
+      if (mentorRemarks.length > 0) {
+        // Find the most recent remark date and add 15 days
+        const lastRemark = mentorRemarks[0]; // Already sorted by date descending
+        const lastDate = new Date(lastRemark.remark_date);
+        const nextDate = new Date(lastDate);
+        nextDate.setDate(nextDate.getDate() + 15);
+        defaultDate = nextDate.toISOString().split('T')[0];
+      } else {
+        // For first remark, use current date as default
+        defaultDate = new Date().toISOString().split('T')[0];
+      }
+      
+      setMentorRemarkForm({
+        remark_date: defaultDate,
+        mentoring_area: '',
+        remarks: ''
+      });
+    }
+    setMentorRemarksDialogOpen(true);
+  };
+
+  const handleSaveMentorRemark = async () => {
+    if (selectedStudent == null) return;
+    try {
+      const url = editingMentorRemark
+        ? apiUrl(`/api/students/${selectedStudent.id}/mentor-remarks/${editingMentorRemark.id}/`)
+        : apiUrl(`/api/students/${selectedStudent.id}/mentor-remarks/`);
+      
+      const method = editingMentorRemark ? 'PUT' : 'POST';
+      
+      const res = await authFetch(url, {
+        method,
+        body: JSON.stringify(mentorRemarkForm)
+      });
+
+      if (res.ok) {
+        setMentorRemarksDialogOpen(false);
+        loadMentorRemarks(selectedStudent.id);
+        toast({ 
+          title: editingMentorRemark ? 'Remark updated' : 'Remark added',
+          description: 'Your mentor remark has been saved successfully.' 
+        });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        console.error('Save remark error:', err);
+        let errorMessage = 'Please try again.';
+        if (err.detail) {
+          errorMessage = err.detail;
+        } else if (typeof err === 'object') {
+          errorMessage = Object.entries(err).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`).join('; ');
+        }
+        toast({ 
+          title: 'Failed to save remark', 
+          description: errorMessage, 
+          variant: 'destructive' 
+        });
+      }
+    } catch (error) {
+      console.error('Save remark error:', error);
+      toast({ 
+        title: 'Failed to save remark', 
+        description: 'Network error. Please try again.', 
+        variant: 'destructive' 
+      });
+    }
+  };
+
+  const handleDeleteMentorRemark = async (remarkId: number) => {
+    if (selectedStudent == null) return;
+    if (!confirm('Are you sure you want to delete this remark? Only admin can delete remarks.')) return;
+    
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${selectedStudent.id}/mentor-remarks/${remarkId}/`), {
+        method: 'DELETE'
+      });
+
+      if (res.ok) {
+        loadMentorRemarks(selectedStudent.id);
+        toast({ 
+          title: 'Remark deleted', 
+          description: 'The remark has been removed.' 
+        });
+      } else {
+        toast({ 
+          title: 'Failed to delete remark', 
+          description: 'Only admin can delete remarks.', 
+          variant: 'destructive' 
+        });
+      }
+    } catch {
+      toast({ 
+        title: 'Failed to delete remark', 
+        description: 'Network error. Please try again.', 
+        variant: 'destructive' 
+      });
+    }
+  };
+
+  const handleEditStudentProfile = () => {
+    if (!selectedStudent) return;
+    setStudentProfileForm({ ...selectedStudent });
+    setEditingStudentProfile(true);
+  };
+
+  const handleSaveStudentProfile = async () => {
+    if (!selectedStudent) return;
+    try {
+      const res = await authFetch(apiUrl(`/api/users/${selectedStudent.id}/`), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(studentProfileForm)
+      });
+
+      if (res.ok) {
+        const updatedStudent = await res.json();
+        setSelectedStudent(updatedStudent);
+        setEditingStudentProfile(false);
+        toast({
+          title: 'Profile updated',
+          description: 'Student profile has been updated successfully.'
+        });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        console.error('Save profile error:', err);
+        let errorMessage = 'Please try again.';
+        if (err.detail) {
+          errorMessage = err.detail;
+        } else if (typeof err === 'object') {
+          errorMessage = Object.entries(err).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`).join('; ');
+        }
+        toast({
+          title: 'Failed to save profile',
+          description: errorMessage,
+          variant: 'destructive'
+        });
+      }
+    } catch (error) {
+      console.error('Save profile error:', error);
+      toast({
+        title: 'Failed to save profile',
+        description: 'Network error. Please try again.',
+        variant: 'destructive'
+      });
     }
   };
 
@@ -234,6 +473,8 @@ export const MentorLayout: React.FC = () => {
   const handleViewStudentProfile = (student: AssignedStudent) => {
     setSelectedStudent(student);
     setStudentProfileOpen(true);
+    loadStudentAchievements(student.id);
+    loadMentorRemarks(student.id);
   };
 
   const loadAcademicRecords = async (studentId: number) => {
@@ -1050,13 +1291,35 @@ export const MentorLayout: React.FC = () => {
                 <DialogTitle>Student Mentoring Record</DialogTitle>
                 <p className="text-sm text-gray-500 mt-1">Complete profile and academic information</p>
               </div>
-              <Button variant="ghost" size="sm" onClick={() => setStudentProfileOpen(false)}>
-                <X className="w-4 h-4" />
-              </Button>
+              <div className="flex items-center gap-2">
+                {!editingStudentProfile && (
+                  <Button variant="outline" size="sm" onClick={handleEditStudentProfile}>
+                    <Edit className="w-4 h-4 mr-2" />
+                    Edit Profile
+                  </Button>
+                )}
+                <Button variant="ghost" size="sm" onClick={() => {
+                  setStudentProfileOpen(false);
+                  setEditingStudentProfile(false);
+                }}>
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
             </div>
           </DialogHeader>
           {selectedStudent && (
             <div className="space-y-6">
+              {editingStudentProfile && (
+                <div className="flex justify-end gap-2 mb-4">
+                  <Button variant="outline" onClick={() => setEditingStudentProfile(false)}>
+                    Cancel
+                  </Button>
+                  <Button onClick={handleSaveStudentProfile}>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save Changes
+                  </Button>
+                </div>
+              )}
               {/* Basic Information */}
               <div className="space-y-4 bg-blue-50 p-4 rounded-lg">
                 <h3 className="font-semibold text-lg flex items-center gap-2 text-blue-900">
@@ -1066,10 +1329,14 @@ export const MentorLayout: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="flex items-center gap-3">
                     {selectedStudent.photo ? (
-                      <img 
-                        src={selectedStudent.photo} 
-                        alt="Student Photo" 
+                      <img
+                        src={selectedStudent.photo.startsWith('http') ? selectedStudent.photo : apiUrl(selectedStudent.photo)}
+                        alt="Student Photo"
                         className="w-16 h-16 object-cover rounded-lg border"
+                        onError={(e) => {
+                          console.error('Photo load error:', e);
+                          (e.target as HTMLImageElement).style.display = 'none';
+                        }}
                       />
                     ) : (
                       <div className="w-16 h-16 bg-gray-200 rounded-lg flex items-center justify-center">
@@ -1077,37 +1344,104 @@ export const MentorLayout: React.FC = () => {
                       </div>
                     )}
                     <div>
-                      <p className="font-semibold text-lg">{selectedStudent.full_name || selectedStudent.username}</p>
-                      <p className="text-sm text-gray-600">{selectedStudent.roll_number || 'N/A'}</p>
+                      {editingStudentProfile ? (
+                        <Input
+                          value={studentProfileForm.full_name || ''}
+                          onChange={(e) => setStudentProfileForm({ ...studentProfileForm, full_name: e.target.value })}
+                          placeholder="Full Name"
+                        />
+                      ) : (
+                        <>
+                          <p className="font-semibold text-lg">{selectedStudent.full_name || selectedStudent.username}</p>
+                          <p className="text-sm text-gray-600">{selectedStudent.roll_number || 'N/A'}</p>
+                        </>
+                      )}
                     </div>
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Email</label>
-                    <p className="text-sm">{selectedStudent.email}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.email || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, email: e.target.value })}
+                        placeholder="Email"
+                        disabled
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.email}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Phone</label>
-                    <p className="text-sm">{selectedStudent.phone || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.phone || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, phone: e.target.value })}
+                        placeholder="Phone"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.phone || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Department</label>
-                    <p className="text-sm">{selectedStudent.department || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.department || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, department: e.target.value })}
+                        placeholder="Department"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.department || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Section</label>
-                    <p className="text-sm">{selectedStudent.section || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.section || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, section: e.target.value })}
+                        placeholder="Section"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.section || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Year</label>
-                    <p className="text-sm">{selectedStudent.year || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.year || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, year: e.target.value })}
+                        placeholder="Year"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.year || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Date of Birth</label>
-                    <p className="text-sm">{selectedStudent.date_of_birth ? format(parseISO(selectedStudent.date_of_birth), 'PPP') : 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        type="date"
+                        value={studentProfileForm.date_of_birth || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, date_of_birth: e.target.value })}
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.date_of_birth ? format(parseISO(selectedStudent.date_of_birth), 'PPP') : 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Date of Joining</label>
-                    <p className="text-sm">{selectedStudent.date_of_joining ? format(parseISO(selectedStudent.date_of_joining), 'PPP') : 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        type="date"
+                        value={studentProfileForm.date_of_joining || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, date_of_joining: e.target.value })}
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.date_of_joining ? format(parseISO(selectedStudent.date_of_joining), 'PPP') : 'N/A'}</p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1121,19 +1455,63 @@ export const MentorLayout: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="text-sm font-medium text-gray-600">Guardian Name</label>
-                    <p className="text-sm">{selectedStudent.guardian_name || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.guardian_name || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, guardian_name: e.target.value })}
+                        placeholder="Guardian Name"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.guardian_name || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Guardian Relation</label>
-                    <p className="text-sm">{selectedStudent.guardian_relation || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.guardian_relation || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, guardian_relation: e.target.value })}
+                        placeholder="Guardian Relation"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.guardian_relation || 'N/A'}</p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium text-gray-600">Guardian Mobile</label>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.guardian_mobile || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, guardian_mobile: e.target.value })}
+                        placeholder="Guardian Mobile"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.guardian_mobile || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Occupation</label>
-                    <p className="text-sm">{selectedStudent.occupation || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.occupation || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, occupation: e.target.value })}
+                        placeholder="Occupation"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.occupation || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Annual Income</label>
-                    <p className="text-sm">{selectedStudent.income ? `₹${selectedStudent.income.toLocaleString()}` : 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.income || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, income: e.target.value })}
+                        placeholder="Annual Income"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.income ? `₹${selectedStudent.income.toLocaleString()}` : 'N/A'}</p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1147,27 +1525,75 @@ export const MentorLayout: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="md:col-span-2">
                     <label className="text-sm font-medium text-gray-600">Address</label>
-                    <p className="text-sm whitespace-pre-wrap">{selectedStudent.address || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.address || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, address: e.target.value })}
+                        placeholder="Address"
+                      />
+                    ) : (
+                      <p className="text-sm whitespace-pre-wrap">{selectedStudent.address || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">City</label>
-                    <p className="text-sm">{selectedStudent.city || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.city || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, city: e.target.value })}
+                        placeholder="City"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.city || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">State</label>
-                    <p className="text-sm">{selectedStudent.state || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.state || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, state: e.target.value })}
+                        placeholder="State"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.state || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Pincode</label>
-                    <p className="text-sm">{selectedStudent.pincode || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.pincode || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, pincode: e.target.value })}
+                        placeholder="Pincode"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.pincode || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Residential Details</label>
-                    <p className="text-sm">{selectedStudent.residential_details || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.residential_details || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, residential_details: e.target.value })}
+                        placeholder="Residential Details"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.residential_details || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Mode of Transport</label>
-                    <p className="text-sm">{selectedStudent.mode_of_transport || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.mode_of_transport || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, mode_of_transport: e.target.value })}
+                        placeholder="Mode of Transport"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.mode_of_transport || 'N/A'}</p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1181,23 +1607,63 @@ export const MentorLayout: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="text-sm font-medium text-gray-600">Admission Category</label>
-                    <p className="text-sm">{selectedStudent.admission_category || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.admission_category || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, admission_category: e.target.value })}
+                        placeholder="Admission Category"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.admission_category || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">EAPCET Rank</label>
-                    <p className="text-sm">{selectedStudent.eapcet_rank || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.eapcet_rank || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, eapcet_rank: e.target.value })}
+                        placeholder="EAPCET Rank"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.eapcet_rank || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">ECET Rank</label>
-                    <p className="text-sm">{selectedStudent.ecet_rank || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.ecet_rank || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, ecet_rank: e.target.value })}
+                        placeholder="ECET Rank"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.ecet_rank || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Reservation Category</label>
-                    <p className="text-sm">{selectedStudent.reservation_category || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.reservation_category || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, reservation_category: e.target.value })}
+                        placeholder="Reservation Category"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.reservation_category || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Scholarship</label>
-                    <p className="text-sm">{selectedStudent.scholarship || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.scholarship || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, scholarship: e.target.value })}
+                        placeholder="Scholarship"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.scholarship || 'N/A'}</p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1215,19 +1681,51 @@ export const MentorLayout: React.FC = () => {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
                       <label className="text-sm font-medium text-gray-600">Board</label>
-                      <p className="text-sm">{selectedStudent.ssc_board || 'N/A'}</p>
+                      {editingStudentProfile ? (
+                        <Input
+                          value={studentProfileForm.ssc_board || ''}
+                          onChange={(e) => setStudentProfileForm({ ...studentProfileForm, ssc_board: e.target.value })}
+                          placeholder="Board"
+                        />
+                      ) : (
+                        <p className="text-sm">{selectedStudent.ssc_board || 'N/A'}</p>
+                      )}
                     </div>
                     <div>
                       <label className="text-sm font-medium text-gray-600">School Name</label>
-                      <p className="text-sm">{selectedStudent.ssc_school || 'N/A'}</p>
+                      {editingStudentProfile ? (
+                        <Input
+                          value={studentProfileForm.ssc_school || ''}
+                          onChange={(e) => setStudentProfileForm({ ...studentProfileForm, ssc_school: e.target.value })}
+                          placeholder="School Name"
+                        />
+                      ) : (
+                        <p className="text-sm">{selectedStudent.ssc_school || 'N/A'}</p>
+                      )}
                     </div>
                     <div>
                       <label className="text-sm font-medium text-gray-600">Percentage/CGPA</label>
-                      <p className="text-sm">{selectedStudent.ssc_percentage ? `${selectedStudent.ssc_percentage}%` : 'N/A'}</p>
+                      {editingStudentProfile ? (
+                        <Input
+                          value={studentProfileForm.ssc_percentage || ''}
+                          onChange={(e) => setStudentProfileForm({ ...studentProfileForm, ssc_percentage: e.target.value })}
+                          placeholder="Percentage"
+                        />
+                      ) : (
+                        <p className="text-sm">{selectedStudent.ssc_percentage ? `${selectedStudent.ssc_percentage}%` : 'N/A'}</p>
+                      )}
                     </div>
                     <div>
                       <label className="text-sm font-medium text-gray-600">Class/Distinction</label>
-                      <p className="text-sm">{selectedStudent.ssc_class || 'N/A'}</p>
+                      {editingStudentProfile ? (
+                        <Input
+                          value={studentProfileForm.ssc_class || ''}
+                          onChange={(e) => setStudentProfileForm({ ...studentProfileForm, ssc_class: e.target.value })}
+                          placeholder="Class"
+                        />
+                      ) : (
+                        <p className="text-sm">{selectedStudent.ssc_class || 'N/A'}</p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1238,19 +1736,51 @@ export const MentorLayout: React.FC = () => {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
                       <label className="text-sm font-medium text-gray-600">Board</label>
-                      <p className="text-sm">{selectedStudent.intermediate_board || 'N/A'}</p>
+                      {editingStudentProfile ? (
+                        <Input
+                          value={studentProfileForm.intermediate_board || ''}
+                          onChange={(e) => setStudentProfileForm({ ...studentProfileForm, intermediate_board: e.target.value })}
+                          placeholder="Board"
+                        />
+                      ) : (
+                        <p className="text-sm">{selectedStudent.intermediate_board || 'N/A'}</p>
+                      )}
                     </div>
                     <div>
                       <label className="text-sm font-medium text-gray-600">College Name</label>
-                      <p className="text-sm">{selectedStudent.intermediate_college || 'N/A'}</p>
+                      {editingStudentProfile ? (
+                        <Input
+                          value={studentProfileForm.intermediate_college || ''}
+                          onChange={(e) => setStudentProfileForm({ ...studentProfileForm, intermediate_college: e.target.value })}
+                          placeholder="College Name"
+                        />
+                      ) : (
+                        <p className="text-sm">{selectedStudent.intermediate_college || 'N/A'}</p>
+                      )}
                     </div>
                     <div>
                       <label className="text-sm font-medium text-gray-600">Percentage/CGPA</label>
-                      <p className="text-sm">{selectedStudent.intermediate_percentage ? `${selectedStudent.intermediate_percentage}%` : 'N/A'}</p>
+                      {editingStudentProfile ? (
+                        <Input
+                          value={studentProfileForm.intermediate_percentage || ''}
+                          onChange={(e) => setStudentProfileForm({ ...studentProfileForm, intermediate_percentage: e.target.value })}
+                          placeholder="Percentage"
+                        />
+                      ) : (
+                        <p className="text-sm">{selectedStudent.intermediate_percentage ? `${selectedStudent.intermediate_percentage}%` : 'N/A'}</p>
+                      )}
                     </div>
                     <div>
                       <label className="text-sm font-medium text-gray-600">Class/Distinction</label>
-                      <p className="text-sm">{selectedStudent.intermediate_class || 'N/A'}</p>
+                      {editingStudentProfile ? (
+                        <Input
+                          value={studentProfileForm.intermediate_class || ''}
+                          onChange={(e) => setStudentProfileForm({ ...studentProfileForm, intermediate_class: e.target.value })}
+                          placeholder="Class"
+                        />
+                      ) : (
+                        <p className="text-sm">{selectedStudent.intermediate_class || 'N/A'}</p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1259,15 +1789,39 @@ export const MentorLayout: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div>
                     <label className="text-sm font-medium text-gray-600">Medium of Instruction</label>
-                    <p className="text-sm">{selectedStudent.medium_of_instruction || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.medium_of_instruction || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, medium_of_instruction: e.target.value })}
+                        placeholder="Medium of Instruction"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.medium_of_instruction || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Local Language</label>
-                    <p className="text-sm">{selectedStudent.local || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.local || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, local: e.target.value })}
+                        placeholder="Local Language"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.local || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Mother Tongue</label>
-                    <p className="text-sm">{selectedStudent.mother_tongue || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.mother_tongue || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, mother_tongue: e.target.value })}
+                        placeholder="Mother Tongue"
+                      />
+                    ) : (
+                      <p className="text-sm">{selectedStudent.mother_tongue || 'N/A'}</p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1284,27 +1838,169 @@ export const MentorLayout: React.FC = () => {
                       <Award className="w-4 h-4" />
                       Achievements
                     </label>
-                    <p className="text-sm whitespace-pre-wrap">{selectedStudent.achievements || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.achievements || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, achievements: e.target.value })}
+                        placeholder="Achievements"
+                      />
+                    ) : (
+                      <p className="text-sm whitespace-pre-wrap">{selectedStudent.achievements || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600 flex items-center gap-2">
                       <Heart className="w-4 h-4" />
                       Hobbies
                     </label>
-                    <p className="text-sm whitespace-pre-wrap">{selectedStudent.hobbies || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.hobbies || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, hobbies: e.target.value })}
+                        placeholder="Hobbies"
+                      />
+                    ) : (
+                      <p className="text-sm whitespace-pre-wrap">{selectedStudent.hobbies || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600 flex items-center gap-2">
                       <Target className="w-4 h-4" />
                       Areas of Interest
                     </label>
-                    <p className="text-sm whitespace-pre-wrap">{selectedStudent.areas_of_interest || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.areas_of_interest || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, areas_of_interest: e.target.value })}
+                        placeholder="Areas of Interest"
+                      />
+                    ) : (
+                      <p className="text-sm whitespace-pre-wrap">{selectedStudent.areas_of_interest || 'N/A'}</p>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-600">Other Information</label>
-                    <p className="text-sm whitespace-pre-wrap">{selectedStudent.other_information || 'N/A'}</p>
+                    {editingStudentProfile ? (
+                      <Input
+                        value={studentProfileForm.other_information || ''}
+                        onChange={(e) => setStudentProfileForm({ ...studentProfileForm, other_information: e.target.value })}
+                        placeholder="Other Information"
+                      />
+                    ) : (
+                      <p className="text-sm whitespace-pre-wrap">{selectedStudent.other_information || 'N/A'}</p>
+                    )}
                   </div>
                 </div>
+              </div>
+
+              {/* Student Achievements Section */}
+              <div className="space-y-4 bg-violet-50 p-4 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-lg flex items-center gap-2 text-violet-900">
+                    <Award className="w-5 h-5" />
+                    Student Achievements
+                  </h3>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => {
+                      if (selectedStudent) {
+                        loadStudentAchievements(selectedStudent.id);
+                        setStudentAchievementsOpen(true);
+                      }
+                    }}
+                  >
+                    View All Achievements
+                  </Button>
+                </div>
+                <div className="grid gap-2">
+                  {studentAchievements.length === 0 ? (
+                    <p className="text-sm text-gray-600">No achievements recorded by student.</p>
+                  ) : (
+                    studentAchievements.slice(0, 3).map((achievement) => (
+                      <div key={achievement.id} className="bg-white p-3 rounded-lg border">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge variant="secondary" className="capitalize text-xs">
+                            {achievement.achievement_type.replace('_', ' ')}
+                          </Badge>
+                          <Badge variant="outline" className="capitalize text-xs">
+                            {achievement.participation_level}
+                          </Badge>
+                        </div>
+                        <p className="font-medium text-sm">{achievement.activity_name}</p>
+                        <p className="text-xs text-gray-600">{achievement.event_name}</p>
+                        <p className="text-xs text-gray-500 mt-1">
+                          {format(parseISO(achievement.date_achieved), 'PPP')}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                  {studentAchievements.length > 3 && (
+                    <p className="text-xs text-gray-500 text-center">
+                      And {studentAchievements.length - 3} more achievements...
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Mentor Remarks Section */}
+              <div className="space-y-4 bg-amber-50 p-4 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-lg flex items-center gap-2 text-amber-900">
+                    <FileText className="w-5 h-5" />
+                    Mentor Remarks
+                  </h3>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => {
+                      if (selectedStudent) {
+                        loadMentorRemarks(selectedStudent.id);
+                        setMentorRemarksDialogOpen(true);
+                      }
+                    }}
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Remark
+                  </Button>
+                </div>
+                <div className="grid gap-2">
+                  {mentorRemarks.length === 0 ? (
+                    <p className="text-sm text-gray-600">No mentor remarks recorded yet.</p>
+                  ) : (
+                    mentorRemarks.slice(0, 3).map((remark) => (
+                      <div key={remark.id} className="bg-white p-3 rounded-lg border">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge variant="secondary" className="capitalize text-xs">
+                            {remark.mentoring_area}
+                          </Badge>
+                          <span className="text-xs text-gray-500">
+                            {format(parseISO(remark.remark_date), 'PPP')}
+                          </span>
+                        </div>
+                        <p className="text-sm mb-1">{remark.remarks}</p>
+                        <p className="text-xs text-gray-500">
+                          By: {remark.mentor_name}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                  {mentorRemarks.length > 3 && (
+                    <p className="text-xs text-gray-500 text-center">
+                      And {mentorRemarks.length - 3} more remarks...
+                    </p>
+                  )}
+                </div>
+                {mentorRemarks.length > 0 && (() => {
+                  const lastDate = new Date(mentorRemarks[0].remark_date);
+                  const nextDate = new Date(lastDate);
+                  nextDate.setDate(nextDate.getDate() + 15);
+                  return (
+                    <div className="text-xs text-gray-500 bg-white p-2 rounded border">
+                      <p className="font-medium">Next remark due: {format(nextDate, 'PPP')}</p>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Assignment Notes */}
@@ -1609,6 +2305,132 @@ export const MentorLayout: React.FC = () => {
               <Button onClick={handleSaveMentorAttendance} className="bg-green-600 hover:bg-green-700">
                 <Save className="w-4 h-4 mr-2" />
                 {editingMentorAttendance ? 'Update Record' : 'Add Record'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Student Achievements Dialog */}
+      <Dialog open={studentAchievementsOpen} onOpenChange={setStudentAchievementsOpen}>
+        <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <DialogTitle>Student Achievements</DialogTitle>
+                <p className="text-sm text-gray-500 mt-1">
+                  {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setStudentAchievementsOpen(false)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </DialogHeader>
+          <div className="space-y-4">
+            {studentAchievementsLoading ? (
+              <p className="text-sm text-gray-600 text-center py-8">Loading achievements...</p>
+            ) : studentAchievements.length === 0 ? (
+              <div className="text-center py-8">
+                <Award className="w-12 h-12 mx-auto text-gray-400 mb-4" />
+                <p className="text-sm text-gray-600">No achievements recorded by this student.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {studentAchievements.map((achievement) => (
+                  <div key={achievement.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Badge variant="secondary" className="capitalize">
+                            {achievement.achievement_type.replace('_', ' ')}
+                          </Badge>
+                          <Badge variant="outline" className="capitalize">
+                            {achievement.participation_level}
+                          </Badge>
+                        </div>
+                        <h4 className="font-semibold text-lg">{achievement.activity_name}</h4>
+                        <p className="text-sm text-gray-600 mb-2">{achievement.event_name}</p>
+                        <p className="text-sm mb-2">{achievement.achievement_details}</p>
+                        <p className="text-xs text-gray-500">
+                          Date: {format(parseISO(achievement.date_achieved), 'PPP')}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Mentor Remarks Dialog */}
+      <Dialog open={mentorRemarksDialogOpen} onOpenChange={setMentorRemarksDialogOpen}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <DialogTitle>
+                  {editingMentorRemark ? 'Edit Mentor Remark' : 'Add Mentor Remark'}
+                </DialogTitle>
+                <p className="text-sm text-gray-500 mt-1">
+                  {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setMentorRemarksDialogOpen(false)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="remark_date">Remark Date *</Label>
+                <Input
+                  id="remark_date"
+                  type="date"
+                  value={mentorRemarkForm.remark_date}
+                  onChange={(e) => setMentorRemarkForm({ ...mentorRemarkForm, remark_date: e.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Default: Every 15 days from last remark. You can override to a specific date.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="mentoring_area">Area of Mentoring *</Label>
+                <Select
+                  value={mentorRemarkForm.mentoring_area}
+                  onValueChange={(value) => setMentorRemarkForm({ ...mentorRemarkForm, mentoring_area: value })}
+                >
+                  <SelectTrigger id="mentoring_area">
+                    <SelectValue placeholder="Select area" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="academic">Academic</SelectItem>
+                    <SelectItem value="attendance">Attendance</SelectItem>
+                    <SelectItem value="discipline">Discipline</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="remarks">Remarks *</Label>
+              <textarea
+                id="remarks"
+                className="w-full min-h-[120px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="Enter your mentor remarks..."
+                value={mentorRemarkForm.remarks}
+                onChange={(e) => setMentorRemarkForm({ ...mentorRemarkForm, remarks: e.target.value })}
+              />
+            </div>
+            <div className="flex justify-end gap-3 pt-4">
+              <Button variant="outline" onClick={() => setMentorRemarksDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveMentorRemark}>
+                {editingMentorRemark ? 'Update Remark' : 'Add Remark'}
               </Button>
             </div>
           </div>
