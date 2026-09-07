@@ -92,10 +92,7 @@ export const MentorLayout: React.FC = () => {
   const [filterYear, setFilterYear] = useState('');
   const [selectedStudent, setSelectedStudent] = useState<AssignedStudent | null>(null);
   const [studentProfileOpen, setStudentProfileOpen] = useState(false);
-  const [mentorNotes, setMentorNotes] = useState<{ [key: number]: string }>({});
-  const [editNotesOpen, setEditNotesOpen] = useState(false);
-  const [currentNoteStudent, setCurrentNoteStudent] = useState<AssignedStudent | null>(null);
-  const [noteText, setNoteText] = useState('');
+  const [sortBy, setSortBy] = useState<'name' | 'roll_number' | 'department' | 'year'>('name');
 
   useEffect(() => {
     loadAssignedStudents();
@@ -141,43 +138,25 @@ export const MentorLayout: React.FC = () => {
   const departments = [...new Set(assignedStudents.map(s => s.department).filter(Boolean))];
   const years = [...new Set(assignedStudents.map(s => s.year).filter(Boolean))];
 
+  // Sorting functionality
+  const finalSortedStudents = [...filteredStudents].sort((a, b) => {
+    switch (sortBy) {
+      case 'name':
+        return (a.full_name || a.username).localeCompare(b.full_name || b.username);
+      case 'roll_number':
+        return (a.roll_number || '').localeCompare(b.roll_number || '');
+      case 'department':
+        return (a.department || '').localeCompare(b.department || '');
+      case 'year':
+        return (a.year || '').localeCompare(b.year || '');
+      default:
+        return 0;
+    }
+  });
+
   const handleViewStudentProfile = (student: AssignedStudent) => {
     setSelectedStudent(student);
     setStudentProfileOpen(true);
-  };
-
-  const handleEditNotes = (student: AssignedStudent) => {
-    setCurrentNoteStudent(student);
-    setNoteText(mentorNotes[student.id] || student.assignment_notes || '');
-    setEditNotesOpen(true);
-  };
-
-  const handleSaveNotes = async () => {
-    if (!currentNoteStudent) return;
-    
-    try {
-      const res = await authFetch(apiUrl(`/api/mentor-assignments/`), {
-        method: 'POST',
-        body: JSON.stringify({
-          mentor_id: user?.id,
-          student_id: currentNoteStudent.id,
-          notes: noteText
-        })
-      });
-
-      if (res.ok) {
-        setMentorNotes(prev => ({
-          ...prev,
-          [currentNoteStudent.id]: noteText
-        }));
-        setEditNotesOpen(false);
-        toast({ title: 'Notes saved', description: 'Mentor notes have been updated.' });
-      } else {
-        toast({ title: 'Failed to save notes', description: 'Please try again.', variant: 'destructive' });
-      }
-    } catch {
-      toast({ title: 'Failed to save notes', description: 'Network error.', variant: 'destructive' });
-    }
   };
 
   return (
@@ -250,10 +229,10 @@ export const MentorLayout: React.FC = () => {
               {/* Filters */}
               <Card>
                 <CardHeader>
-                  <CardTitle>Filter Students</CardTitle>
+                  <CardTitle>Filter and Sort Students</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                     <div className="space-y-2">
                       <Label htmlFor="search">Search</Label>
                       <div className="relative">
@@ -295,6 +274,20 @@ export const MentorLayout: React.FC = () => {
                         ))}
                       </select>
                     </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="sort">Sort By</Label>
+                      <select
+                        id="sort"
+                        value={sortBy}
+                        onChange={(e) => setSortBy(e.target.value as any)}
+                        className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white"
+                      >
+                        <option value="name">Name</option>
+                        <option value="roll_number">Roll Number</option>
+                        <option value="department">Department</option>
+                        <option value="year">Year</option>
+                      </select>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -304,13 +297,13 @@ export const MentorLayout: React.FC = () => {
                 <CardHeader>
                   <CardTitle>Assigned Students</CardTitle>
                   <CardDescription>
-                    {filteredStudents.length} student{filteredStudents.length !== 1 ? 's' : ''} assigned to you
+                    {finalSortedStudents.length} student{finalSortedStudents.length !== 1 ? 's' : ''} assigned to you
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
                   {loading ? (
                     <div className="text-center py-8 text-gray-500">Loading students...</div>
-                  ) : filteredStudents.length === 0 ? (
+                  ) : finalSortedStudents.length === 0 ? (
                     <div className="text-center py-12">
                       <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
                       <p className="text-gray-500 mb-2">No students found</p>
@@ -322,7 +315,7 @@ export const MentorLayout: React.FC = () => {
                     </div>
                   ) : (
                     <div className="space-y-4">
-                      {filteredStudents.map((student) => (
+                      {finalSortedStudents.map((student) => (
                         <div
                           key={student.id}
                           className="border rounded-lg p-4 hover:bg-gray-50 transition-colors"
@@ -330,19 +323,11 @@ export const MentorLayout: React.FC = () => {
                           <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
                             <div className="flex-1">
                               <div className="flex items-start gap-3">
-                                {student.photo ? (
-                                  <img 
-                                    src={student.photo} 
-                                    alt={student.full_name || student.username}
-                                    className="w-12 h-12 object-cover rounded-full border"
-                                  />
-                                ) : (
-                                  <div className="bg-gradient-to-r from-purple-500 to-indigo-500 p-2 rounded-full">
-                                    <GraduationCap className="w-5 h-5 text-white" />
-                                  </div>
-                                )}
+                                <div className="bg-gradient-to-r from-purple-500 to-indigo-500 p-2 rounded-full">
+                                  <GraduationCap className="w-5 h-5 text-white" />
+                                </div>
                                 <div className="flex-1">
-                                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                  <div className="flex items-center gap-2 mb-1">
                                     <h3 className="font-semibold text-gray-900">
                                       {student.full_name || student.username}
                                     </h3>
@@ -351,12 +336,6 @@ export const MentorLayout: React.FC = () => {
                                         Detained
                                       </Badge>
                                     )}
-                                    <Badge variant="outline" className="text-xs">
-                                      {student.department || 'N/A'}
-                                    </Badge>
-                                    <Badge variant="outline" className="text-xs">
-                                      {student.year || 'N/A'} Year
-                                    </Badge>
                                   </div>
                                   <div className="space-y-1 text-sm text-gray-600">
                                     <div className="flex items-center gap-2">
@@ -373,47 +352,36 @@ export const MentorLayout: React.FC = () => {
                                         <span>{student.phone}</span>
                                       </div>
                                     )}
+                                    <div className="flex items-center gap-2">
+                                      <BookOpen className="w-4 h-4" />
+                                      <span>{student.department || 'N/A'} - {student.year || 'N/A'}</span>
+                                    </div>
                                     {student.section && (
                                       <div className="flex items-center gap-2">
                                         <span className="font-medium">Section:</span>
                                         <span>{student.section}</span>
                                       </div>
                                     )}
-                                    <div className="flex items-center gap-2">
-                                      <MapPin className="w-4 h-4" />
-                                      <span>{student.city || 'N/A'}, {student.state || 'N/A'}</span>
-                                    </div>
                                   </div>
                                 </div>
                               </div>
                             </div>
                             <div className="flex flex-col items-end gap-2 text-sm">
-                              <div className="flex gap-2">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => handleViewStudentProfile(student)}
-                                  className="w-full md:w-auto"
-                                >
-                                  <User className="w-4 h-4 mr-2" />
-                                  View Profile
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => handleEditNotes(student)}
-                                  className="w-full md:w-auto"
-                                >
-                                  <FileText className="w-4 h-4 mr-2" />
-                                  Notes
-                                </Button>
-                              </div>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleViewStudentProfile(student)}
+                                className="w-full md:w-auto bg-purple-50 hover:bg-purple-100 border-purple-200"
+                              >
+                                <User className="w-4 h-4 mr-2" />
+                                View Complete Profile
+                              </Button>
                               <div className="text-gray-500">
                                 Assigned: {new Date(student.assigned_at).toLocaleDateString()}
                               </div>
-                              {(student.assignment_notes || mentorNotes[student.id]) && (
+                              {student.assignment_notes && (
                                 <div className="bg-yellow-50 border border-yellow-200 rounded px-2 py-1 text-yellow-800 max-w-xs">
-                                  <span className="font-medium">Note:</span> {mentorNotes[student.id] || student.assignment_notes}
+                                  <span className="font-medium">Note:</span> {student.assignment_notes}
                                 </div>
                               )}
                             </div>
@@ -429,44 +397,15 @@ export const MentorLayout: React.FC = () => {
         </Tabs>
       </main>
 
-      {/* Edit Notes Dialog */}
-      <Dialog open={editNotesOpen} onOpenChange={setEditNotesOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Edit Mentor Notes</DialogTitle>
-            <DialogDescription>
-              Add notes for {currentNoteStudent?.full_name || currentNoteStudent?.username}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <div className="grid gap-2">
-              <Label htmlFor="notes">Notes</Label>
-              <textarea
-                id="notes"
-                className="flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                value={noteText}
-                onChange={(e) => setNoteText(e.target.value)}
-                placeholder="Enter your mentor notes about this student..."
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditNotesOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleSaveNotes}>
-              Save Notes
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       {/* Student Profile Dialog */}
       <Dialog open={studentProfileOpen} onOpenChange={setStudentProfileOpen}>
         <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <div className="flex items-center justify-between">
-              <DialogTitle>Student Profile</DialogTitle>
+              <div>
+                <DialogTitle>Student Mentoring Record</DialogTitle>
+                <p className="text-sm text-gray-500 mt-1">Complete profile and academic information</p>
+              </div>
               <Button variant="ghost" size="sm" onClick={() => setStudentProfileOpen(false)}>
                 <X className="w-4 h-4" />
               </Button>
@@ -475,8 +414,8 @@ export const MentorLayout: React.FC = () => {
           {selectedStudent && (
             <div className="space-y-6">
               {/* Basic Information */}
-              <div className="space-y-4">
-                <h3 className="font-semibold text-lg flex items-center gap-2">
+              <div className="space-y-4 bg-blue-50 p-4 rounded-lg">
+                <h3 className="font-semibold text-lg flex items-center gap-2 text-blue-900">
                   <User className="w-5 h-5" />
                   Basic Information
                 </h3>
@@ -530,8 +469,8 @@ export const MentorLayout: React.FC = () => {
               </div>
 
               {/* Guardian Information */}
-              <div className="space-y-4">
-                <h3 className="font-semibold text-lg flex items-center gap-2">
+              <div className="space-y-4 bg-green-50 p-4 rounded-lg">
+                <h3 className="font-semibold text-lg flex items-center gap-2 text-green-900">
                   <User className="w-5 h-5" />
                   Guardian Information
                 </h3>
@@ -556,8 +495,8 @@ export const MentorLayout: React.FC = () => {
               </div>
 
               {/* Address Information */}
-              <div className="space-y-4">
-                <h3 className="font-semibold text-lg flex items-center gap-2">
+              <div className="space-y-4 bg-orange-50 p-4 rounded-lg">
+                <h3 className="font-semibold text-lg flex items-center gap-2 text-orange-900">
                   <MapPin className="w-5 h-5" />
                   Address Information
                 </h3>
@@ -590,8 +529,8 @@ export const MentorLayout: React.FC = () => {
               </div>
 
               {/* Academic Information */}
-              <div className="space-y-4">
-                <h3 className="font-semibold text-lg flex items-center gap-2">
+              <div className="space-y-4 bg-purple-50 p-4 rounded-lg">
+                <h3 className="font-semibold text-lg flex items-center gap-2 text-purple-900">
                   <BookOpen className="w-5 h-5" />
                   Academic Information
                 </h3>
@@ -620,8 +559,8 @@ export const MentorLayout: React.FC = () => {
               </div>
 
               {/* Educational Profile */}
-              <div className="space-y-4">
-                <h3 className="font-semibold text-lg flex items-center gap-2">
+              <div className="space-y-4 bg-indigo-50 p-4 rounded-lg">
+                <h3 className="font-semibold text-lg flex items-center gap-2 text-indigo-900">
                   <GraduationCap className="w-5 h-5" />
                   Educational Profile
                 </h3>
@@ -690,8 +629,8 @@ export const MentorLayout: React.FC = () => {
               </div>
 
               {/* Additional Information */}
-              <div className="space-y-4">
-                <h3 className="font-semibold text-lg flex items-center gap-2">
+              <div className="space-y-4 bg-pink-50 p-4 rounded-lg">
+                <h3 className="font-semibold text-lg flex items-center gap-2 text-pink-900">
                   <FileText className="w-5 h-5" />
                   Additional Information
                 </h3>
