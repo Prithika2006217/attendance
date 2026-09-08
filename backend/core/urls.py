@@ -31,10 +31,13 @@ from .views import (
     mentor_assignment_view,
     mentor_assignment_detail_view,
     mentor_students_view,
+    bulk_mentor_assignment_view,
     student_academic_records_view,
     student_academic_record_detail_view,
     mentor_attendance_records_view,
     mentor_attendance_record_detail_view,
+    counselling_notes_view,
+    counselling_note_detail_view,
 )
 
 urlpatterns = [
@@ -69,10 +72,13 @@ urlpatterns = [
     path('qr-attendance/sessions/<int:session_id>/records/', qr_attendance_records_view),
     path('mentor-assignments/', mentor_assignment_view),
     path('mentor-assignments/<int:assignment_id>/', mentor_assignment_detail_view),
+    path('mentor-assignments/bulk/', bulk_mentor_assignment_view),
     path('mentor-students/', mentor_students_view),
     path('mentor-students/<int:mentor_id>/', mentor_students_view),
     path('students/<int:student_id>/academic-records/', student_academic_records_view),
     path('students/<int:student_id>/academic-records/<int:record_id>/', student_academic_record_detail_view),
     path('students/<int:student_id>/mentor-attendance/', mentor_attendance_records_view),
     path('students/<int:student_id>/mentor-attendance/<int:record_id>/', mentor_attendance_record_detail_view),
+    path('students/<int:student_id>/counselling-notes/', counselling_notes_view),
+    path('students/<int:student_id>/counselling-notes/<int:note_id>/', counselling_note_detail_view),
 ]

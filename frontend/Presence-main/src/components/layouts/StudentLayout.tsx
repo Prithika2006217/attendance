@@ -199,6 +199,18 @@ export const StudentLayout: React.FC = () => {
   }[]>([]);
   const [mentorRemarksLoading, setMentorRemarksLoading] = useState(false);
 
+  // Counselling Notes state
+  const [counsellingNotes, setCounsellingNotes] = useState<{
+    id: number;
+    mentor_name: string;
+    mentor_email: string;
+    counselling_date: string;
+    remarks: string;
+    created_at: string;
+    updated_at: string;
+  }[]>([]);
+  const [counsellingNotesLoading, setCounsellingNotesLoading] = useState(false);
+
   /** QR Attendance state for students */
   const [qrScanningOpen, setQrScanningOpen] = useState(false);
   const [qrSessionId, setQrSessionId] = useState('');
@@ -508,9 +520,28 @@ export const StudentLayout: React.FC = () => {
     }
   };
 
+  const loadCounsellingNotes = async () => {
+    if (numericId == null) return;
+    setCounsellingNotesLoading(true);
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${numericId}/counselling-notes/`));
+      if (res.ok) {
+        const data = await res.json();
+        setCounsellingNotes(Array.isArray(data) ? data : []);
+      } else {
+        setCounsellingNotes([]);
+      }
+    } catch (error) {
+      setCounsellingNotes([]);
+    } finally {
+      setCounsellingNotesLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (activeTab === 'achievements') {
       loadMentorRemarks();
+      loadCounsellingNotes();
     }
   }, [activeTab, numericId]);
 
@@ -1684,6 +1715,48 @@ export const StudentLayout: React.FC = () => {
                         <p className="text-sm mb-2">{remark.remarks}</p>
                         <p className="text-xs text-muted-foreground">
                           By: {remark.mentor_name} ({remark.mentor_email})
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Counselling Notes Section - Read Only for Students */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Counselling Notes</CardTitle>
+                <CardDescription>Counselling and guidance notes from your assigned mentor</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {counsellingNotesLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading counselling notes...</p>
+                ) : counsellingNotes.length === 0 ? (
+                  <div className="text-center py-8">
+                    <div className="w-12 h-12 mx-auto text-muted-foreground mb-4 flex items-center justify-center">
+                      <FileText className="w-12 h-12" />
+                    </div>
+                    <p className="text-sm text-muted-foreground">No counselling notes recorded yet.</p>
+                    <p className="text-xs text-muted-foreground mt-1">Your mentor will add counselling notes here to provide guidance and support.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {counsellingNotes.map((note) => (
+                      <div key={note.id} className="border rounded-lg p-4 bg-muted/30">
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline">
+                              {format(parseISO(note.counselling_date), 'PPP')}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {format(parseISO(note.created_at), 'PPP')}
+                          </p>
+                        </div>
+                        <p className="text-sm mb-2">{note.remarks}</p>
+                        <p className="text-xs text-muted-foreground">
+                          By: {note.mentor_name} ({note.mentor_email})
                         </p>
                       </div>
                     ))}

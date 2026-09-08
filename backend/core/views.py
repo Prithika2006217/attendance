@@ -19,12 +19,13 @@ import io
 import base64
 import random
 from decimal import Decimal
-from .models import User, Attendance, Department, Subject, Section, AttendancePortalControl, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord
+from .models import User, Attendance, Department, Subject, Section, AttendancePortalControl, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord, CounsellingNote
 from .serializers import (
     RegisterSerializer, LoginSerializer, AttendanceSerializer, UserSerializer,
     DepartmentSerializer, SubjectSerializer, SectionSerializer, FacultyDepartmentSectionSerializer,
     QRAttendanceSessionSerializer, QRAttendanceRecordSerializer, MentorStudentAssignmentSerializer,
     StudentAcademicRecordSerializer, MentorAttendanceRecordSerializer,
+    CounsellingNoteSerializer,
 )
 
 
@@ -2471,6 +2472,116 @@ def mentor_assignment_view(request):
         return Response(serializer.data, status=201)
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def bulk_mentor_assignment_view(request):
+    """Bulk assign students to a mentor based on filters."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    
+    if not is_admin:
+        return Response({"detail": "Only admins can perform bulk assignments."}, status=403)
+
+    mentor_id = request.data.get('mentor_id')
+    year = request.data.get('year')
+    department = request.data.get('department')
+    section = request.data.get('section')
+    roll_number_from = request.data.get('roll_number_from')
+    roll_number_to = request.data.get('roll_number_to')
+    notes = request.data.get('notes', '')
+
+    if not mentor_id:
+        return Response({"detail": "mentor_id is required."}, status=400)
+
+    try:
+        mentor = User.objects.get(id=mentor_id, role='mentor')
+    except User.DoesNotExist:
+        return Response({"detail": "Invalid mentor."}, status=404)
+
+    # Build query filters
+    student_filters = {'role': 'student'}
+    
+    # Only add filters if they are not "all" or empty
+    if year and year != 'all':
+        student_filters['year'] = year
+    if department and department != 'all':
+        student_filters['department__icontains'] = department  # Use contains for department name
+    if section and section != 'all':
+        # Handle comma-separated sections - check if section is in the list
+        student_filters['section__icontains'] = section
+    
+    # Get students matching the filters
+    students = User.objects.filter(**student_filters)
+    
+    # Apply roll number range filter if provided
+    if roll_number_from or roll_number_to:
+        if roll_number_from:
+            # Convert to integer for numeric comparison if possible
+            try:
+                roll_from_int = int(roll_number_from)
+                students = students.filter(roll_number__gte=str(roll_from_int))
+            except ValueError:
+                # If not numeric, use string comparison
+                students = students.filter(roll_number__gte=roll_number_from)
+        
+        if roll_number_to:
+            try:
+                roll_to_int = int(roll_number_to)
+                students = students.filter(roll_number__lte=str(roll_to_int))
+            except ValueError:
+                students = students.filter(roll_number__lte=roll_number_to)
+
+    # Check if no students match the criteria
+    if not students.exists():
+        # Return more detailed error message
+        all_students = User.objects.filter(role='student')
+        return Response({
+            "detail": "No students found matching the criteria.",
+            "debug": {
+                "total_students": all_students.count(),
+                "matching_students": students.count(),
+                "filters_applied": {
+                    "year": year if year and year != 'all' else None,
+                    "department": department if department and department != 'all' else None,
+                    "section": section if section and section != 'all' else None,
+                    "roll_number_from": roll_number_from,
+                    "roll_number_to": roll_number_to
+                }
+            }
+        }, status=404)
+
+    # Create assignments for matching students
+    created_assignments = []
+    skipped_assignments = []
+    
+    for student in students:
+        # Check if assignment already exists
+        if MentorStudentAssignment.objects.filter(mentor=mentor, student=student).exists():
+            skipped_assignments.append({
+                'student_id': student.id,
+                'student_name': student.full_name or student.username,
+                'roll_number': student.roll_number,
+                'reason': 'Already assigned'
+            })
+        else:
+            assignment = MentorStudentAssignment.objects.create(
+                mentor=mentor,
+                student=student,
+                notes=notes
+            )
+            created_assignments.append({
+                'student_id': student.id,
+                'student_name': student.full_name or student.username,
+                'roll_number': student.roll_number
+            })
+
+    return Response({
+        'created': len(created_assignments),
+        'skipped': len(skipped_assignments),
+        'created_assignments': created_assignments,
+        'skipped_assignments': skipped_assignments
+    }, status=201)
+
+
 @api_view(['GET', 'PATCH', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def mentor_assignment_detail_view(request, assignment_id):
@@ -2807,4 +2918,124 @@ def mentor_attendance_record_detail_view(request, student_id, record_id):
         if not is_admin:
             return Response({"detail": "Only admin can delete attendance records."}, status=403)
         record.delete()
+        return Response(status=204)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def counselling_notes_view(request, student_id):
+    """Get or create counselling notes for a specific student."""
+    is_mentor = request.user.role == 'mentor'
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    is_student = request.user.role == 'student'
+
+    if not is_mentor and not is_admin and not is_student:
+        return Response({"detail": "Not authorized."}, status=403)
+
+    # Verify access permissions
+    if is_mentor:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+            if not MentorStudentAssignment.objects.filter(mentor=request.user, student=student).exists():
+                return Response({"detail": "You are not assigned to this student."}, status=403)
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+    elif is_student:
+        if request.user.id != student_id:
+            return Response({"detail": "Students can only view their own counselling notes."}, status=403)
+        student = request.user
+    else:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+
+    if request.method == 'GET':
+        records = CounsellingNote.objects.filter(student=student).order_by('-counselling_date', '-created_at')
+        serializer = CounsellingNoteSerializer(records, many=True)
+        return Response(serializer.data)
+
+    elif request.method == 'POST':
+        if not is_mentor and not is_admin:
+            return Response({"detail": "Only mentors and admins can create counselling notes."}, status=403)
+        
+        data = request.data.copy()
+        # Remove student and mentor from request data as they're set programmatically
+        data.pop('student', None)
+        data.pop('mentor', None)
+        
+        serializer = CounsellingNoteSerializer(data=data)
+        if serializer.is_valid():
+            # Save with the student and mentor set programmatically
+            serializer.save(student=student, mentor=request.user)
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def counselling_note_detail_view(request, student_id, note_id):
+    """Get, update or delete a specific counselling note."""
+    is_mentor = request.user.role == 'mentor'
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    is_student = request.user.role == 'student'
+
+    if not is_mentor and not is_admin and not is_student:
+        return Response({"detail": "Not authorized."}, status=403)
+
+    # Verify access permissions
+    if is_mentor:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+            if not MentorStudentAssignment.objects.filter(mentor=request.user, student=student).exists():
+                return Response({"detail": "You are not assigned to this student."}, status=403)
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+    elif is_student:
+        if request.user.id != student_id:
+            return Response({"detail": "Students can only view their own counselling notes."}, status=403)
+        student = request.user
+    else:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+
+    try:
+        note = CounsellingNote.objects.get(id=note_id, student=student)
+    except CounsellingNote.DoesNotExist:
+        return Response({"detail": "Counselling note not found."}, status=404)
+
+    if request.method == 'GET':
+        serializer = CounsellingNoteSerializer(note)
+        return Response(serializer.data)
+
+    elif request.method == 'PUT':
+        if not is_mentor and not is_admin:
+            return Response({"detail": "Only mentors and admins can update counselling notes."}, status=403)
+        
+        # Only the original mentor or admin can update
+        if is_mentor and note.mentor != request.user:
+            return Response({"detail": "You can only update your own counselling notes."}, status=403)
+        
+        data = request.data.copy()
+        # Remove student and mentor from request data as they shouldn't be changed
+        data.pop('student', None)
+        data.pop('mentor', None)
+        
+        serializer = CounsellingNoteSerializer(note, data=data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+
+    elif request.method == 'DELETE':
+        if not is_mentor and not is_admin:
+            return Response({"detail": "Only mentors and admins can delete counselling notes."}, status=403)
+        
+        # Only the original mentor or admin can delete
+        if is_mentor and note.mentor != request.user:
+            return Response({"detail": "You can only delete your own counselling notes."}, status=403)
+        
+        note.delete()
         return Response(status=204)

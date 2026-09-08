@@ -1,5 +1,5 @@
-
 from django.db import models
+from django.core.exceptions import ValidationError
 from django.contrib.auth.models import AbstractUser
 
 
@@ -310,3 +310,21 @@ class MentorRemark(models.Model):
 
     def __str__(self):
         return f"{self.mentor.full_name or self.mentor.username} - {self.student.full_name or self.student.username} ({self.mentoring_area}) - {self.remark_date}"
+
+
+class CounsellingNote(models.Model):
+    """Model to store counselling notes for students."""
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='counselling_notes')
+    mentor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='given_counselling_notes')
+    counselling_date = models.DateField(help_text='Date of the counselling session')
+    remarks = models.TextField(help_text='Counselling remarks and notes')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Counselling Note'
+        verbose_name_plural = 'Counselling Notes'
+        ordering = ['-counselling_date', '-created_at']
+
+    def __str__(self):
+        return f"{self.mentor.full_name or self.mentor.username} - {self.student.full_name or self.student.username} - {self.counselling_date}"

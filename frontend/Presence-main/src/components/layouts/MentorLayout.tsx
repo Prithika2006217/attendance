@@ -160,6 +160,20 @@ type MentorRemark = {
   updated_at: string;
 };
 
+type CounsellingNote = {
+  id: number;
+  student: number;
+  student_name: string;
+  student_roll_number: string | null;
+  mentor: number;
+  mentor_name: string;
+  mentor_email: string;
+  counselling_date: string;
+  remarks: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export const MentorLayout: React.FC = () => {
   const { user, logout } = useAuth();
   const [activeTab, setActiveTab] = useState('students');
@@ -214,6 +228,14 @@ export const MentorLayout: React.FC = () => {
   const [mentorRemarkForm, setMentorRemarkForm] = useState({
     remark_date: '',
     mentoring_area: '',
+    remarks: ''
+  });
+  const [counsellingNotes, setCounsellingNotes] = useState<CounsellingNote[]>([]);
+  const [counsellingNotesLoading, setCounsellingNotesLoading] = useState(false);
+  const [counsellingNotesDialogOpen, setCounsellingNotesDialogOpen] = useState(false);
+  const [editingCounsellingNote, setEditingCounsellingNote] = useState<CounsellingNote | null>(null);
+  const [counsellingNoteForm, setCounsellingNoteForm] = useState({
+    counselling_date: '',
     remarks: ''
   });
 
@@ -277,6 +299,23 @@ export const MentorLayout: React.FC = () => {
       setMentorRemarks([]);
     } finally {
       setMentorRemarksLoading(false);
+    }
+  };
+
+  const loadCounsellingNotes = async (studentId: number) => {
+    setCounsellingNotesLoading(true);
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${studentId}/counselling-notes/`));
+      if (res.ok) {
+        const data = await res.json();
+        setCounsellingNotes(Array.isArray(data) ? data : []);
+      } else {
+        setCounsellingNotes([]);
+      }
+    } catch (error) {
+      setCounsellingNotes([]);
+    } finally {
+      setCounsellingNotesLoading(false);
     }
   };
 
@@ -362,7 +401,7 @@ export const MentorLayout: React.FC = () => {
 
   const handleDeleteMentorRemark = async (remarkId: number) => {
     if (selectedStudent == null) return;
-    if (!confirm('Are you sure you want to delete this remark? Only admin can delete remarks.')) return;
+    if (!confirm('Are you sure you want to delete this remark?')) return;
     
     try {
       const res = await authFetch(apiUrl(`/api/students/${selectedStudent.id}/mentor-remarks/${remarkId}/`), {
@@ -395,6 +434,110 @@ export const MentorLayout: React.FC = () => {
     if (!selectedStudent) return;
     setStudentProfileForm({ ...selectedStudent });
     setEditingStudentProfile(true);
+  };
+
+  const handleOpenCounsellingNoteDialog = (note = null) => {
+    if (note) {
+      setEditingCounsellingNote(note);
+      setCounsellingNoteForm({
+        counselling_date: note.counselling_date,
+        remarks: note.remarks
+      });
+    } else {
+      setEditingCounsellingNote(null);
+      // Default to current date for first note, or 15 days after last note
+      let defaultDate = new Date().toISOString().split('T')[0];
+      if (counsellingNotes.length > 0) {
+        const lastDate = new Date(counsellingNotes[0].counselling_date);
+        const nextDate = new Date(lastDate);
+        nextDate.setDate(nextDate.getDate() + 15);
+        defaultDate = nextDate.toISOString().split('T')[0];
+      }
+      setCounsellingNoteForm({
+        counselling_date: defaultDate,
+        remarks: ''
+      });
+    }
+    setCounsellingNotesDialogOpen(true);
+  };
+
+  const handleSaveCounsellingNote = async () => {
+    if (selectedStudent == null) return;
+    try {
+      const url = editingCounsellingNote
+        ? apiUrl(`/api/students/${selectedStudent.id}/counselling-notes/${editingCounsellingNote.id}/`)
+        : apiUrl(`/api/students/${selectedStudent.id}/counselling-notes/`);
+      
+      const method = editingCounsellingNote ? 'PUT' : 'POST';
+      
+      const res = await authFetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(counsellingNoteForm)
+      });
+
+      if (res.ok) {
+        setCounsellingNotesDialogOpen(false);
+        loadCounsellingNotes(selectedStudent.id);
+        toast({ 
+          title: editingCounsellingNote ? 'Counselling note updated' : 'Counselling note added',
+          description: 'Your counselling note has been saved successfully.' 
+        });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        console.error('Save counselling note error:', err);
+        let errorMessage = 'Please try again.';
+        if (err.detail) {
+          errorMessage = err.detail;
+        } else if (typeof err === 'object') {
+          errorMessage = Object.entries(err).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`).join('; ');
+        }
+        toast({ 
+          title: 'Failed to save counselling note', 
+          description: errorMessage, 
+          variant: 'destructive' 
+        });
+      }
+    } catch (error) {
+      console.error('Save counselling note error:', error);
+      toast({ 
+        title: 'Failed to save counselling note', 
+        description: 'Network error. Please try again.', 
+        variant: 'destructive' 
+      });
+    }
+  };
+
+  const handleDeleteCounsellingNote = async (noteId: number) => {
+    if (selectedStudent == null) return;
+    if (!confirm('Are you sure you want to delete this counselling note?')) return;
+    
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${selectedStudent.id}/counselling-notes/${noteId}/`), {
+        method: 'DELETE'
+      });
+
+      if (res.ok) {
+        loadCounsellingNotes(selectedStudent.id);
+        toast({ 
+          title: 'Counselling note deleted', 
+          description: 'The counselling note has been removed.' 
+        });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast({ 
+          title: 'Failed to delete counselling note', 
+          description: err.detail || 'You can only delete your own counselling notes.', 
+          variant: 'destructive' 
+        });
+      }
+    } catch (error) {
+      toast({ 
+        title: 'Failed to delete counselling note', 
+        description: 'Network error. Please try again.', 
+        variant: 'destructive' 
+      });
+    }
   };
 
   const handleSaveStudentProfile = async () => {
@@ -475,6 +618,7 @@ export const MentorLayout: React.FC = () => {
     setStudentProfileOpen(true);
     loadStudentAchievements(student.id);
     loadMentorRemarks(student.id);
+    loadCounsellingNotes(student.id);
   };
 
   const loadAcademicRecords = async (studentId: number) => {
@@ -824,6 +968,10 @@ export const MentorLayout: React.FC = () => {
                 <TabsTrigger value="mentor-attendance">
                   <CalendarIcon className="w-4 h-4 mr-2" />
                   Attendance
+                </TabsTrigger>
+                <TabsTrigger value="counselling-notes">
+                  <FileText className="w-4 h-4 mr-2" />
+                  Counselling Notes
                 </TabsTrigger>
               </>
             )}
@@ -1267,6 +1415,69 @@ export const MentorLayout: React.FC = () => {
                                 >
                                   <Trash2 className="w-4 h-4 mr-1" />
                                   Delete
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            </TabsContent>
+          )}
+
+          {/* Counselling Notes Tab */}
+          {selectedStudent && (
+            <TabsContent value="counselling-notes">
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Counselling Notes</h2>
+                    <p className="text-gray-600">
+                      {selectedStudent.full_name || selectedStudent.username} - {selectedStudent.roll_number || 'N/A'}
+                    </p>
+                  </div>
+                  <Button onClick={() => handleOpenCounsellingNoteDialog()} className="bg-purple-600 hover:bg-purple-700">
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Counselling Note
+                  </Button>
+                </div>
+                <Card>
+                  <CardContent className="pt-6">
+                    {counsellingNotesLoading ? (
+                      <div className="text-center py-8">Loading...</div>
+                    ) : counsellingNotes.length === 0 ? (
+                      <div className="text-center py-8 text-gray-500">
+                        No counselling notes yet. Click "Add Counselling Note" to start tracking.
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {counsellingNotes.map((note) => (
+                          <div key={note.id} className="border rounded-lg p-4 bg-white hover:bg-gray-50 transition-colors">
+                            <div className="flex items-start justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <Badge variant="outline">{format(parseISO(note.counselling_date), 'PPP')}</Badge>
+                                  <span className="text-sm text-gray-500">by {note.mentor_name}</span>
+                                </div>
+                                <p className="text-sm whitespace-pre-wrap">{note.remarks}</p>
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleOpenCounsellingNoteDialog(note)}
+                                >
+                                  <Edit className="w-4 h-4" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleDeleteCounsellingNote(note.id)}
+                                >
+                                  <Trash2 className="w-4 h-4" />
                                 </Button>
                               </div>
                             </div>
@@ -2003,6 +2214,61 @@ export const MentorLayout: React.FC = () => {
                 })()}
               </div>
 
+              {/* Counselling Notes Section */}
+              <div className="space-y-4 bg-purple-50 p-4 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-lg flex items-center gap-2 text-purple-900">
+                    <FileText className="w-5 h-5" />
+                    Counselling Notes
+                  </h3>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => {
+                      if (selectedStudent) {
+                        loadCounsellingNotes(selectedStudent.id);
+                        setCounsellingNotesDialogOpen(true);
+                      }
+                    }}
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Counselling Note
+                  </Button>
+                </div>
+                <div className="grid gap-2">
+                  {counsellingNotes.length === 0 ? (
+                    <p className="text-sm text-gray-600">No counselling notes recorded yet.</p>
+                  ) : (
+                    counsellingNotes.slice(0, 3).map((note) => (
+                      <div key={note.id} className="bg-white p-3 rounded-lg border">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge variant="outline" className="text-xs">
+                            {format(parseISO(note.counselling_date), 'PPP')}
+                          </Badge>
+                          <span className="text-xs text-gray-500">by {note.mentor_name}</span>
+                        </div>
+                        <p className="text-sm line-clamp-2">{note.remarks}</p>
+                      </div>
+                    ))
+                  )}
+                  {counsellingNotes.length > 3 && (
+                    <p className="text-xs text-gray-500 text-center">
+                      And {counsellingNotes.length - 3} more counselling notes...
+                    </p>
+                  )}
+                </div>
+                {counsellingNotes.length > 0 && (() => {
+                  const lastDate = new Date(counsellingNotes[0].counselling_date);
+                  const nextDate = new Date(lastDate);
+                  nextDate.setDate(nextDate.getDate() + 15);
+                  return (
+                    <div className="text-xs text-gray-500 bg-white p-2 rounded border">
+                      <p className="font-medium">Next counselling due: {format(nextDate, 'PPP')}</p>
+                    </div>
+                  );
+                })()}
+              </div>
+
               {/* Assignment Notes */}
               {selectedStudent.assignment_notes && (
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
@@ -2431,6 +2697,59 @@ export const MentorLayout: React.FC = () => {
               </Button>
               <Button onClick={handleSaveMentorRemark}>
                 {editingMentorRemark ? 'Update Remark' : 'Add Remark'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Counselling Notes Dialog */}
+      <Dialog open={counsellingNotesDialogOpen} onOpenChange={setCounsellingNotesDialogOpen}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <DialogTitle>
+                  {editingCounsellingNote ? 'Edit Counselling Note' : 'Add Counselling Note'}
+                </DialogTitle>
+                <p className="text-sm text-gray-500 mt-1">
+                  {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setCounsellingNotesDialogOpen(false)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="counselling_date">Counselling Date *</Label>
+              <Input
+                id="counselling_date"
+                type="date"
+                value={counsellingNoteForm.counselling_date}
+                onChange={(e) => setCounsellingNoteForm({ ...counsellingNoteForm, counselling_date: e.target.value })}
+              />
+              <p className="text-xs text-muted-foreground">
+                Default: Every 15 days from last counselling note. You can override to a specific date.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="counselling_remarks">Remarks *</Label>
+              <textarea
+                id="counselling_remarks"
+                className="w-full min-h-[120px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="Enter your counselling remarks..."
+                value={counsellingNoteForm.remarks}
+                onChange={(e) => setCounsellingNoteForm({ ...counsellingNoteForm, remarks: e.target.value })}
+              />
+            </div>
+            <div className="flex justify-end gap-3 pt-4">
+              <Button variant="outline" onClick={() => setCounsellingNotesDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveCounsellingNote}>
+                {editingCounsellingNote ? 'Update Note' : 'Add Note'}
               </Button>
             </div>
           </div>

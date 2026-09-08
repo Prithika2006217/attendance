@@ -1,6 +1,6 @@
 
 from rest_framework import serializers
-from .models import User, Attendance, Department, Subject, Section, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord, StudentAchievement, MentorRemark
+from .models import User, Attendance, Department, Subject, Section, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord, StudentAchievement, MentorRemark, CounsellingNote
 from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -486,6 +486,36 @@ class MentorRemarkSerializer(serializers.ModelSerializer):
             'id', 'student', 'student_name', 'student_roll_number',
             'mentor', 'mentor_name', 'mentor_email',
             'remark_date', 'mentoring_area', 'remarks',
+            'created_at', 'updated_at'
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at', 'student', 'mentor')
+
+    def get_student_name(self, obj):
+        return obj.student.full_name or obj.student.username
+
+    def get_student_roll_number(self, obj):
+        return obj.student.roll_number
+
+    def get_mentor_name(self, obj):
+        return obj.mentor.full_name or obj.mentor.username
+
+    def get_mentor_email(self, obj):
+        return obj.mentor.email
+
+
+class CounsellingNoteSerializer(serializers.ModelSerializer):
+    """Serializer for counselling notes."""
+    student_name = serializers.SerializerMethodField(read_only=True)
+    student_roll_number = serializers.SerializerMethodField(read_only=True)
+    mentor_name = serializers.SerializerMethodField(read_only=True)
+    mentor_email = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = CounsellingNote
+        fields = (
+            'id', 'student', 'student_name', 'student_roll_number',
+            'mentor', 'mentor_name', 'mentor_email',
+            'counselling_date', 'remarks',
             'created_at', 'updated_at'
         )
         read_only_fields = ('id', 'created_at', 'updated_at', 'student', 'mentor')

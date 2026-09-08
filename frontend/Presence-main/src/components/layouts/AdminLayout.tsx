@@ -346,6 +346,16 @@ export const AdminLayout: React.FC = () => {
     notes: ''
   });
   const [selectedAssignment, setSelectedAssignment] = useState<number | null>(null);
+  const [isBulkAssignmentDialogOpen, setIsBulkAssignmentDialogOpen] = useState(false);
+  const [bulkAssignmentFormData, setBulkAssignmentFormData] = useState({
+    mentor_id: '',
+    year: 'all',
+    department: 'all',
+    section: 'all',
+    roll_number_from: '',
+    roll_number_to: '',
+    notes: ''
+  });
 
   useEffect(() => {
     // Initialize - clear any loading errors when tab changes
@@ -2113,6 +2123,104 @@ export const AdminLayout: React.FC = () => {
         description: error.message || 'An error occurred.',
         variant: 'destructive'
       });
+    }
+  };
+
+  const handleAddBulkAssignment = async () => {
+    try {
+      // Ensure mentors are loaded before opening the dialog
+      if (apiMentors.length === 0) {
+        setMentorsLoading(true);
+        try {
+          const res = await authFetch(apiUrl('/api/users/?role=mentor'));
+          if (res.ok) {
+            const data = await res.json();
+            setApiMentors(Array.isArray(data) ? data : []);
+          }
+        } catch (error) {
+          console.error('Failed to load mentors:', error);
+        } finally {
+          setMentorsLoading(false);
+        }
+      }
+
+      setBulkAssignmentFormData({
+        mentor_id: '',
+        year: 'all',
+        department: 'all',
+        section: 'all',
+        roll_number_from: '',
+        roll_number_to: '',
+        notes: ''
+      });
+      setIsBulkAssignmentDialogOpen(true);
+    } catch (error) {
+      console.error('Error in handleAddBulkAssignment:', error);
+    }
+  };
+
+  const handleSaveBulkAssignment = async () => {
+    try {
+      if (!bulkAssignmentFormData.mentor_id) {
+        toast({
+          title: 'Validation Error',
+          description: 'Please select a mentor.',
+          variant: 'destructive'
+        });
+        return;
+      }
+
+      const payload = {
+        mentor_id: parseInt(bulkAssignmentFormData.mentor_id),
+        notes: bulkAssignmentFormData.notes
+      };
+
+      // Only include filters that have values and are not "all"
+      if (bulkAssignmentFormData.year && bulkAssignmentFormData.year !== 'all') (payload as any).year = bulkAssignmentFormData.year;
+      if (bulkAssignmentFormData.department && bulkAssignmentFormData.department !== 'all') (payload as any).department = bulkAssignmentFormData.department;
+      if (bulkAssignmentFormData.section && bulkAssignmentFormData.section !== 'all') (payload as any).section = bulkAssignmentFormData.section;
+      if (bulkAssignmentFormData.roll_number_from) (payload as any).roll_number_from = bulkAssignmentFormData.roll_number_from;
+      if (bulkAssignmentFormData.roll_number_to) (payload as any).roll_number_to = bulkAssignmentFormData.roll_number_to;
+
+      console.log('Bulk assignment payload:', payload);
+
+      const res = await authFetch(apiUrl('/api/mentor-assignments/bulk/'), {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data.detail || (typeof data === 'object' ? JSON.stringify(data) : 'Bulk assignment failed');
+        toast({ title: 'Bulk Assignment Failed', description: String(msg), variant: 'destructive' });
+        return;
+      }
+
+      // Refresh assignments
+      setMentorAssignmentsLoading(true);
+      authFetch(apiUrl('/api/mentor-assignments/'))
+        .then(r => r.ok ? r.json() : [])
+        .then((data: unknown) => setApiMentorAssignments(Array.isArray(data) ? data : []))
+        .catch(() => setApiMentorAssignments([]))
+        .finally(() => setMentorAssignmentsLoading(false));
+
+      setIsBulkAssignmentDialogOpen(false);
+      setBulkAssignmentFormData({
+        mentor_id: '',
+        year: 'all',
+        department: 'all',
+        section: 'all',
+        roll_number_from: '',
+        roll_number_to: '',
+        notes: ''
+      });
+
+      toast({
+        title: 'Bulk Assignment Completed',
+        description: `Created ${data.created} assignments. Skipped ${data.skipped} already assigned students.`
+      });
+    } catch (error: any) {
+      toast({ title: 'Operation Failed', description: error.message || 'An error occurred.', variant: 'destructive' });
     }
   };
 
@@ -4220,10 +4328,16 @@ export const AdminLayout: React.FC = () => {
                     <CardTitle>Mentor-Student Assignments</CardTitle>
                     <CardDescription>Assign students to mentors for mentorship programs.</CardDescription>
                   </div>
-                  <Button onClick={handleAddAssignment}>
-                    <Plus className="w-4 h-4 mr-2" />
-                    Create Assignment
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button onClick={handleAddBulkAssignment} variant="outline">
+                      <Users className="w-4 h-4 mr-2" />
+                      Bulk Assign
+                    </Button>
+                    <Button onClick={handleAddAssignment}>
+                      <Plus className="w-4 h-4 mr-2" />
+                      Create Assignment
+                    </Button>
+                  </div>
                 </CardHeader>
                 <CardContent>
                   {mentorAssignmentsLoading ? (
@@ -4371,6 +4485,152 @@ export const AdminLayout: React.FC = () => {
               </DialogContent>
             </Dialog>
           </TabsContent>
+
+          {/* Bulk Assignment Dialog */}
+          <Dialog open={isBulkAssignmentDialogOpen} onOpenChange={setIsBulkAssignmentDialogOpen}>
+            <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>Bulk Mentor Assignment</DialogTitle>
+                <DialogDescription>
+                  Assign multiple students to a mentor based on filters (Year, Branch, Section, Roll Number range).
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="bulk-mentor">Mentor *</Label>
+                  <Select
+                    value={bulkAssignmentFormData.mentor_id}
+                    onValueChange={(value) => setBulkAssignmentFormData(prev => ({ ...prev, mentor_id: value }))}
+                  >
+                    <SelectTrigger id="bulk-mentor">
+                      <SelectValue placeholder="Select a mentor" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {apiMentors && apiMentors.length > 0 ? apiMentors.map((mentor) => (
+                        <SelectItem key={mentor.id} value={String(mentor.id)}>
+                          {mentor.full_name || mentor.username} ({mentor.email})
+                        </SelectItem>
+                      )) : (
+                        <SelectItem value="none" disabled>No mentors available</SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="bulk-year">Year</Label>
+                    <Select
+                      value={bulkAssignmentFormData.year}
+                      onValueChange={(value) => setBulkAssignmentFormData(prev => ({ ...prev, year: value }))}
+                    >
+                      <SelectTrigger id="bulk-year">
+                        <SelectValue placeholder="Select year" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Years</SelectItem>
+                        <SelectItem value="1">1st Year</SelectItem>
+                        <SelectItem value="2">2nd Year</SelectItem>
+                        <SelectItem value="3">3rd Year</SelectItem>
+                        <SelectItem value="4">4th Year</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="bulk-department">Branch</Label>
+                    <Select
+                      value={bulkAssignmentFormData.department}
+                      onValueChange={(value) => setBulkAssignmentFormData(prev => ({ ...prev, department: value }))}
+                    >
+                      <SelectTrigger id="bulk-department">
+                        <SelectValue placeholder="Select branch" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Branches</SelectItem>
+                        {apiDepartments && apiDepartments.length > 0 ? apiDepartments.map((dept) => (
+                          <SelectItem key={dept.id} value={dept.name}>
+                            {dept.name}
+                          </SelectItem>
+                        )) : (
+                          <SelectItem value="all" disabled>No branches available</SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="bulk-section">Section</Label>
+                    <Select
+                      value={bulkAssignmentFormData.section}
+                      onValueChange={(value) => setBulkAssignmentFormData(prev => ({ ...prev, section: value }))}
+                    >
+                      <SelectTrigger id="bulk-section">
+                        <SelectValue placeholder="Select section" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Sections</SelectItem>
+                        {apiSections && apiSections.length > 0 ? apiSections.map((section) => (
+                          <SelectItem key={section.id} value={section.name}>
+                            {section.name}
+                          </SelectItem>
+                        )) : (
+                          <SelectItem value="all" disabled>No sections available</SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="bulk-roll-from">Roll Number From</Label>
+                    <Input
+                      id="bulk-roll-from"
+                      value={bulkAssignmentFormData.roll_number_from}
+                      onChange={(e) => setBulkAssignmentFormData(prev => ({ ...prev, roll_number_from: e.target.value }))}
+                      placeholder="e.g., 2023001"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="bulk-roll-to">Roll Number To</Label>
+                    <Input
+                      id="bulk-roll-to"
+                      value={bulkAssignmentFormData.roll_number_to}
+                      onChange={(e) => setBulkAssignmentFormData(prev => ({ ...prev, roll_number_to: e.target.value }))}
+                      placeholder="e.g., 2023100"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="bulk-notes">Notes</Label>
+                  <Input
+                    id="bulk-notes"
+                    value={bulkAssignmentFormData.notes}
+                    onChange={(e) => setBulkAssignmentFormData(prev => ({ ...prev, notes: e.target.value }))}
+                    placeholder="Add optional notes about this bulk assignment"
+                  />
+                </div>
+
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                  <p className="text-sm text-blue-800">
+                    <strong>Note:</strong> Students matching the selected criteria will be assigned to the chosen mentor.
+                    Already assigned students will be skipped.
+                  </p>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setIsBulkAssignmentDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={handleSaveBulkAssignment}>
+                  Assign Students
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
 
           {/* QR Attendance Tab */}
           <TabsContent value="qr-attendance">
