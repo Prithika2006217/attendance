@@ -2191,7 +2191,10 @@ export const AdminLayout: React.FC = () => {
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const msg = data.detail || (typeof data === 'object' ? JSON.stringify(data) : 'Bulk assignment failed');
+        let msg = data.detail || 'Bulk assignment failed';
+        if (data.debug) {
+          msg += ` (Total students: ${data.debug.total_students}, Filters: Year=${data.debug.filters_applied.year}, Dept=${data.debug.filters_applied.department}, Section=${data.debug.filters_applied.section}, Roll From=${data.debug.filters_applied.roll_number_from}, Roll To=${data.debug.filters_applied.roll_number_to})`;
+        }
         toast({ title: 'Bulk Assignment Failed', description: String(msg), variant: 'destructive' });
         return;
       }
@@ -4549,8 +4552,8 @@ export const AdminLayout: React.FC = () => {
                       <SelectContent>
                         <SelectItem value="all">All Branches</SelectItem>
                         {apiDepartments && apiDepartments.length > 0 ? apiDepartments.map((dept) => (
-                          <SelectItem key={dept.id} value={dept.name}>
-                            {dept.name}
+                          <SelectItem key={dept.id} value={dept.code}>
+                            {dept.code} - {dept.name}
                           </SelectItem>
                         )) : (
                           <SelectItem value="all" disabled>No branches available</SelectItem>

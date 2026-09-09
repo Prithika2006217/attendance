@@ -1,6 +1,6 @@
 
 from rest_framework import serializers
-from .models import User, Attendance, Department, Subject, Section, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord, StudentAchievement, MentorRemark, CounsellingNote
+from .models import User, Attendance, Department, Subject, Section, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord, StudentAchievement, MentorRemark, CounsellingNote, StudentBehaviour, StudentCareer, StudentLink, StudentTraining
 from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -531,3 +531,110 @@ class CounsellingNoteSerializer(serializers.ModelSerializer):
 
     def get_mentor_email(self, obj):
         return obj.mentor.email
+
+
+class StudentBehaviourSerializer(serializers.ModelSerializer):
+    """Serializer for student behaviour records."""
+    student_name = serializers.SerializerMethodField(read_only=True)
+    student_roll_number = serializers.SerializerMethodField(read_only=True)
+    mentor_name = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = StudentBehaviour
+        fields = (
+            'id', 'student', 'student_name', 'student_roll_number',
+            'mentor', 'mentor_name', 'behaviour_category', 'rating',
+            'assessment_date', 'positive_aspects', 'areas_for_improvement',
+            'action_plan', 'remarks', 'created_at', 'updated_at'
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at', 'student', 'mentor')
+
+    def get_student_name(self, obj):
+        return obj.student.full_name or obj.student.username
+
+    def get_student_roll_number(self, obj):
+        return obj.student.roll_number
+
+    def get_mentor_name(self, obj):
+        return obj.mentor.full_name or obj.mentor.username if obj.mentor else None
+
+
+class StudentCareerSerializer(serializers.ModelSerializer):
+    """Serializer for student career records."""
+    student_name = serializers.SerializerMethodField(read_only=True)
+    student_roll_number = serializers.SerializerMethodField(read_only=True)
+    mentor_name = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = StudentCareer
+        fields = (
+            'id', 'student', 'student_name', 'student_roll_number',
+            'mentor', 'mentor_name', 'career_status', 'company_name',
+            'job_role', 'placement_date', 'salary_package',
+            'skills_for_career', 'career_goals', 'guidance_provided',
+            'resume_status', 'interview_preparation', 'remarks',
+            'created_at', 'updated_at'
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at', 'student', 'mentor')
+
+    def get_student_name(self, obj):
+        return obj.student.full_name or obj.student.username
+
+    def get_student_roll_number(self, obj):
+        return obj.student.roll_number
+
+    def get_mentor_name(self, obj):
+        return obj.mentor.full_name or obj.mentor.username if obj.mentor else None
+
+
+class StudentLinkSerializer(serializers.ModelSerializer):
+    """Serializer for student link records."""
+    student_name = serializers.SerializerMethodField(read_only=True)
+    student_roll_number = serializers.SerializerMethodField(read_only=True)
+    mentor_name = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = StudentLink
+        fields = (
+            'id', 'student', 'student_name', 'student_roll_number',
+            'mentor', 'mentor_name', 'link_title', 'link_url',
+            'link_category', 'description', 'importance', 'status',
+            'remarks', 'created_at', 'updated_at'
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at', 'student', 'mentor')
+
+    def get_student_name(self, obj):
+        return obj.student.full_name or obj.student.username
+
+    def get_student_roll_number(self, obj):
+        return obj.student.roll_number
+
+    def get_mentor_name(self, obj):
+        return obj.mentor.full_name or obj.mentor.username if obj.mentor else None
+
+
+class StudentTrainingSerializer(serializers.ModelSerializer):
+    """Serializer for student training records."""
+    student_name = serializers.SerializerMethodField(read_only=True)
+    student_roll_number = serializers.SerializerMethodField(read_only=True)
+    mentor_name = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = StudentTraining
+        fields = (
+            'id', 'student', 'student_name', 'student_roll_number',
+            'mentor', 'mentor_name', 'training_name', 'training_type',
+            'organization', 'start_date', 'end_date', 'duration_hours',
+            'skills_learned', 'certification_obtained', 'certificate_name',
+            'remarks', 'created_at', 'updated_at'
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at', 'student', 'mentor')
+
+    def get_student_name(self, obj):
+        return obj.student.full_name or obj.student.username
+
+    def get_student_roll_number(self, obj):
+        return obj.student.roll_number
+
+    def get_mentor_name(self, obj):
+        return obj.mentor.full_name or obj.mentor.username if obj.mentor else None

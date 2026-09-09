@@ -90,12 +90,11 @@ DATABASES = {
         'ENGINE': 'django.db.backends.mysql',
         'NAME': 'attendance_db',
         'USER': 'attendance_user',
-        'PASSWORD': 'NewAttendancePass123',
+        'PASSWORD': 'Attendance@123',
         'HOST': 'localhost',
         'PORT': '3306',
     }
 }
-
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 STATIC_URL = 'static/'

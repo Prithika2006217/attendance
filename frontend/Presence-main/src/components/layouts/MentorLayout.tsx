@@ -33,6 +33,11 @@ import {
   Edit,
   Trash2,
   Save,
+  Briefcase,
+  Link as LinkIcon,
+  TrendingUp,
+  Star,
+  Brain,
 } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { format, parseISO } from 'date-fns';
@@ -174,11 +179,92 @@ type CounsellingNote = {
   updated_at: string;
 };
 
+type StudentBehaviour = {
+  id: number;
+  student: number;
+  student_name: string;
+  student_roll_number: string | null;
+  mentor: number;
+  mentor_name: string;
+  behaviour_category: string;
+  rating: number;
+  assessment_date: string;
+  positive_aspects: string | null;
+  areas_for_improvement: string | null;
+  action_plan: string | null;
+  remarks: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type StudentCareer = {
+  id: number;
+  student: number;
+  student_name: string;
+  student_roll_number: string | null;
+  mentor: number;
+  mentor_name: string;
+  career_status: string;
+  company_name: string | null;
+  job_role: string | null;
+  placement_date: string | null;
+  salary_package: string | null;
+  skills_for_career: string | null;
+  career_goals: string | null;
+  guidance_provided: string | null;
+  resume_status: string | null;
+  interview_preparation: string | null;
+  remarks: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type StudentLink = {
+  id: number;
+  student: number;
+  student_name: string;
+  student_roll_number: string | null;
+  mentor: number;
+  mentor_name: string;
+  link_title: string;
+  link_url: string;
+  link_category: string;
+  description: string | null;
+  importance: string | null;
+  status: string;
+  remarks: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type StudentTraining = {
+  id: number;
+  student: number;
+  student_name: string;
+  student_roll_number: string | null;
+  mentor: number;
+  mentor_name: string;
+  training_name: string;
+  training_type: string;
+  organization: string | null;
+  start_date: string;
+  end_date: string;
+  duration_hours: number | null;
+  skills_learned: string | null;
+  certification_obtained: boolean;
+  certificate_name: string | null;
+  remarks: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export const MentorLayout: React.FC = () => {
   const { user, logout } = useAuth();
   const [activeTab, setActiveTab] = useState('students');
   const [assignedStudents, setAssignedStudents] = useState<AssignedStudent[]>([]);
+  const [allStudents, setAllStudents] = useState<AssignedStudent[]>([]);
   const [loading, setLoading] = useState(false);
+  const [allStudentsLoading, setAllStudentsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterDepartment, setFilterDepartment] = useState('');
   const [filterYear, setFilterYear] = useState('');
@@ -238,9 +324,69 @@ export const MentorLayout: React.FC = () => {
     counselling_date: '',
     remarks: ''
   });
+  const [studentBehaviourRecords, setStudentBehaviourRecords] = useState<StudentBehaviour[]>([]);
+  const [studentBehaviourLoading, setStudentBehaviourLoading] = useState(false);
+  const [studentBehaviourDialogOpen, setStudentBehaviourDialogOpen] = useState(false);
+  const [editingStudentBehaviour, setEditingStudentBehaviour] = useState<StudentBehaviour | null>(null);
+  const [studentBehaviourForm, setStudentBehaviourForm] = useState({
+    behaviour_category: '',
+    rating: '',
+    assessment_date: '',
+    positive_aspects: '',
+    areas_for_improvement: '',
+    action_plan: '',
+    remarks: ''
+  });
+  const [studentCareerRecords, setStudentCareerRecords] = useState<StudentCareer[]>([]);
+  const [studentCareerLoading, setStudentCareerLoading] = useState(false);
+  const [studentCareerDialogOpen, setStudentCareerDialogOpen] = useState(false);
+  const [editingStudentCareer, setEditingStudentCareer] = useState<StudentCareer | null>(null);
+  const [studentCareerForm, setStudentCareerForm] = useState({
+    career_status: '',
+    company_name: '',
+    job_role: '',
+    placement_date: '',
+    salary_package: '',
+    skills_for_career: '',
+    career_goals: '',
+    guidance_provided: '',
+    resume_status: '',
+    interview_preparation: '',
+    remarks: ''
+  });
+  const [studentLinkRecords, setStudentLinkRecords] = useState<StudentLink[]>([]);
+  const [studentLinkLoading, setStudentLinkLoading] = useState(false);
+  const [studentLinkDialogOpen, setStudentLinkDialogOpen] = useState(false);
+  const [editingStudentLink, setEditingStudentLink] = useState<StudentLink | null>(null);
+  const [studentLinkForm, setStudentLinkForm] = useState({
+    link_title: '',
+    link_url: '',
+    link_category: '',
+    description: '',
+    importance: '',
+    status: 'pending',
+    remarks: ''
+  });
+  const [studentTrainingRecords, setStudentTrainingRecords] = useState<StudentTraining[]>([]);
+  const [studentTrainingLoading, setStudentTrainingLoading] = useState(false);
+  const [studentTrainingDialogOpen, setStudentTrainingDialogOpen] = useState(false);
+  const [editingStudentTraining, setEditingStudentTraining] = useState<StudentTraining | null>(null);
+  const [studentTrainingForm, setStudentTrainingForm] = useState({
+    training_name: '',
+    training_type: '',
+    organization: '',
+    start_date: '',
+    end_date: '',
+    duration_hours: '',
+    skills_learned: '',
+    certification_obtained: false,
+    certificate_name: '',
+    remarks: ''
+  });
 
   useEffect(() => {
     loadAssignedStudents();
+    loadAllStudents();
   }, []);
 
   const loadAssignedStudents = async () => {
@@ -265,6 +411,31 @@ export const MentorLayout: React.FC = () => {
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadAllStudents = async () => {
+    setAllStudentsLoading(true);
+    try {
+      const res = await authFetch(apiUrl('/api/students/'));
+      if (res.ok) {
+        const data = await res.json();
+        setAllStudents(Array.isArray(data) ? data : []);
+      } else {
+        toast({
+          title: 'Error',
+          description: 'Failed to load all students.',
+          variant: 'destructive'
+        });
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Network error occurred.',
+        variant: 'destructive'
+      });
+    } finally {
+      setAllStudentsLoading(false);
     }
   };
 
@@ -540,6 +711,512 @@ export const MentorLayout: React.FC = () => {
     }
   };
 
+  // Student Behaviour Functions
+  const loadStudentBehaviourRecords = async (studentId: number) => {
+    setStudentBehaviourLoading(true);
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${studentId}/behaviour-records/`));
+      if (res.ok) {
+        const data = await res.json();
+        setStudentBehaviourRecords(Array.isArray(data) ? data : []);
+      } else {
+        setStudentBehaviourRecords([]);
+      }
+    } catch (error) {
+      setStudentBehaviourRecords([]);
+    } finally {
+      setStudentBehaviourLoading(false);
+    }
+  };
+
+  const handleOpenStudentBehaviourDialog = (record = null) => {
+    if (record) {
+      setEditingStudentBehaviour(record);
+      setStudentBehaviourForm({
+        behaviour_category: record.behaviour_category,
+        rating: record.rating.toString(),
+        assessment_date: record.assessment_date,
+        positive_aspects: record.positive_aspects || '',
+        areas_for_improvement: record.areas_for_improvement || '',
+        action_plan: record.action_plan || '',
+        remarks: record.remarks || ''
+      });
+    } else {
+      setEditingStudentBehaviour(null);
+      setStudentBehaviourForm({
+        behaviour_category: '',
+        rating: '',
+        assessment_date: new Date().toISOString().split('T')[0],
+        positive_aspects: '',
+        areas_for_improvement: '',
+        action_plan: '',
+        remarks: ''
+      });
+    }
+    setStudentBehaviourDialogOpen(true);
+  };
+
+  const handleSaveStudentBehaviour = async () => {
+    if (selectedStudent == null) return;
+    try {
+      const url = editingStudentBehaviour
+        ? apiUrl(`/api/students/${selectedStudent.id}/behaviour-records/${editingStudentBehaviour.id}/`)
+        : apiUrl(`/api/students/${selectedStudent.id}/behaviour-records/`);
+      
+      const method = editingStudentBehaviour ? 'PUT' : 'POST';
+      
+      const res = await authFetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...studentBehaviourForm,
+          rating: parseInt(studentBehaviourForm.rating)
+        })
+      });
+
+      if (res.ok) {
+        setStudentBehaviourDialogOpen(false);
+        loadStudentBehaviourRecords(selectedStudent.id);
+        toast({ 
+          title: editingStudentBehaviour ? 'Behaviour record updated' : 'Behaviour record added',
+          description: 'Your behaviour record has been saved successfully.' 
+        });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        let errorMessage = 'Please try again.';
+        if (err.detail) {
+          errorMessage = err.detail;
+        } else if (typeof err === 'object') {
+          errorMessage = Object.entries(err).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`).join('; ');
+        }
+        toast({ 
+          title: 'Failed to save behaviour record', 
+          description: errorMessage, 
+          variant: 'destructive' 
+        });
+      }
+    } catch (error) {
+      toast({ 
+        title: 'Failed to save behaviour record', 
+        description: 'Network error. Please try again.', 
+        variant: 'destructive' 
+      });
+    }
+  };
+
+  const handleDeleteStudentBehaviour = async (recordId: number) => {
+    if (selectedStudent == null) return;
+    if (!confirm('Are you sure you want to delete this behaviour record?')) return;
+    
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${selectedStudent.id}/behaviour-records/${recordId}/`), {
+        method: 'DELETE'
+      });
+
+      if (res.ok) {
+        loadStudentBehaviourRecords(selectedStudent.id);
+        toast({ 
+          title: 'Behaviour record deleted', 
+          description: 'The behaviour record has been removed.' 
+        });
+      } else {
+        toast({ 
+          title: 'Failed to delete behaviour record', 
+          description: 'You can only delete your own behaviour records.', 
+          variant: 'destructive' 
+        });
+      }
+    } catch (error) {
+      toast({ 
+        title: 'Failed to delete behaviour record', 
+        description: 'Network error. Please try again.', 
+        variant: 'destructive' 
+      });
+    }
+  };
+
+  // Student Career Functions
+  const loadStudentCareerRecords = async (studentId: number) => {
+    setStudentCareerLoading(true);
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${studentId}/career-records/`));
+      if (res.ok) {
+        const data = await res.json();
+        setStudentCareerRecords(Array.isArray(data) ? data : []);
+      } else {
+        setStudentCareerRecords([]);
+      }
+    } catch (error) {
+      setStudentCareerRecords([]);
+    } finally {
+      setStudentCareerLoading(false);
+    }
+  };
+
+  const handleOpenStudentCareerDialog = (record = null) => {
+    if (record) {
+      setEditingStudentCareer(record);
+      setStudentCareerForm({
+        career_status: record.career_status,
+        company_name: record.company_name || '',
+        job_role: record.job_role || '',
+        placement_date: record.placement_date || '',
+        salary_package: record.salary_package || '',
+        skills_for_career: record.skills_for_career || '',
+        career_goals: record.career_goals || '',
+        guidance_provided: record.guidance_provided || '',
+        resume_status: record.resume_status || '',
+        interview_preparation: record.interview_preparation || '',
+        remarks: record.remarks || ''
+      });
+    } else {
+      setEditingStudentCareer(null);
+      setStudentCareerForm({
+        career_status: '',
+        company_name: '',
+        job_role: '',
+        placement_date: '',
+        salary_package: '',
+        skills_for_career: '',
+        career_goals: '',
+        guidance_provided: '',
+        resume_status: '',
+        interview_preparation: '',
+        remarks: ''
+      });
+    }
+    setStudentCareerDialogOpen(true);
+  };
+
+  const handleSaveStudentCareer = async () => {
+    if (selectedStudent == null) return;
+    try {
+      const url = editingStudentCareer
+        ? apiUrl(`/api/students/${selectedStudent.id}/career-records/${editingStudentCareer.id}/`)
+        : apiUrl(`/api/students/${selectedStudent.id}/career-records/`);
+      
+      const method = editingStudentCareer ? 'PUT' : 'POST';
+      
+      const res = await authFetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(studentCareerForm)
+      });
+
+      if (res.ok) {
+        setStudentCareerDialogOpen(false);
+        loadStudentCareerRecords(selectedStudent.id);
+        toast({ 
+          title: editingStudentCareer ? 'Career record updated' : 'Career record added',
+          description: 'Your career record has been saved successfully.' 
+        });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        let errorMessage = 'Please try again.';
+        if (err.detail) {
+          errorMessage = err.detail;
+        } else if (typeof err === 'object') {
+          errorMessage = Object.entries(err).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`).join('; ');
+        }
+        toast({ 
+          title: 'Failed to save career record', 
+          description: errorMessage, 
+          variant: 'destructive' 
+        });
+      }
+    } catch (error) {
+      toast({ 
+        title: 'Failed to save career record', 
+        description: 'Network error. Please try again.', 
+        variant: 'destructive' 
+      });
+    }
+  };
+
+  const handleDeleteStudentCareer = async (recordId: number) => {
+    if (selectedStudent == null) return;
+    if (!confirm('Are you sure you want to delete this career record?')) return;
+    
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${selectedStudent.id}/career-records/${recordId}/`), {
+        method: 'DELETE'
+      });
+
+      if (res.ok) {
+        loadStudentCareerRecords(selectedStudent.id);
+        toast({ 
+          title: 'Career record deleted', 
+          description: 'The career record has been removed.' 
+        });
+      } else {
+        toast({ 
+          title: 'Failed to delete career record', 
+          description: 'You can only delete your own career records.', 
+          variant: 'destructive' 
+        });
+      }
+    } catch (error) {
+      toast({ 
+        title: 'Failed to delete career record', 
+        description: 'Network error. Please try again.', 
+        variant: 'destructive' 
+      });
+    }
+  };
+
+  // Student Link Functions
+  const loadStudentLinkRecords = async (studentId: number) => {
+    setStudentLinkLoading(true);
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${studentId}/link-records/`));
+      if (res.ok) {
+        const data = await res.json();
+        setStudentLinkRecords(Array.isArray(data) ? data : []);
+      } else {
+        setStudentLinkRecords([]);
+      }
+    } catch (error) {
+      setStudentLinkRecords([]);
+    } finally {
+      setStudentLinkLoading(false);
+    }
+  };
+
+  const handleOpenStudentLinkDialog = (record = null) => {
+    if (record) {
+      setEditingStudentLink(record);
+      setStudentLinkForm({
+        link_title: record.link_title,
+        link_url: record.link_url,
+        link_category: record.link_category,
+        description: record.description || '',
+        importance: record.importance || '',
+        status: record.status,
+        remarks: record.remarks || ''
+      });
+    } else {
+      setEditingStudentLink(null);
+      setStudentLinkForm({
+        link_title: '',
+        link_url: '',
+        link_category: '',
+        description: '',
+        importance: '',
+        status: 'pending',
+        remarks: ''
+      });
+    }
+    setStudentLinkDialogOpen(true);
+  };
+
+  const handleSaveStudentLink = async () => {
+    if (selectedStudent == null) return;
+    try {
+      const url = editingStudentLink
+        ? apiUrl(`/api/students/${selectedStudent.id}/link-records/${editingStudentLink.id}/`)
+        : apiUrl(`/api/students/${selectedStudent.id}/link-records/`);
+      
+      const method = editingStudentLink ? 'PUT' : 'POST';
+      
+      const res = await authFetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(studentLinkForm)
+      });
+
+      if (res.ok) {
+        setStudentLinkDialogOpen(false);
+        loadStudentLinkRecords(selectedStudent.id);
+        toast({ 
+          title: editingStudentLink ? 'Link record updated' : 'Link record added',
+          description: 'Your link record has been saved successfully.' 
+        });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        let errorMessage = 'Please try again.';
+        if (err.detail) {
+          errorMessage = err.detail;
+        } else if (typeof err === 'object') {
+          errorMessage = Object.entries(err).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`).join('; ');
+        }
+        toast({ 
+          title: 'Failed to save link record', 
+          description: errorMessage, 
+          variant: 'destructive' 
+        });
+      }
+    } catch (error) {
+      toast({ 
+        title: 'Failed to save link record', 
+        description: 'Network error. Please try again.', 
+        variant: 'destructive' 
+      });
+    }
+  };
+
+  const handleDeleteStudentLink = async (recordId: number) => {
+    if (selectedStudent == null) return;
+    if (!confirm('Are you sure you want to delete this link record?')) return;
+    
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${selectedStudent.id}/link-records/${recordId}/`), {
+        method: 'DELETE'
+      });
+
+      if (res.ok) {
+        loadStudentLinkRecords(selectedStudent.id);
+        toast({ 
+          title: 'Link record deleted', 
+          description: 'The link record has been removed.' 
+        });
+      } else {
+        toast({ 
+          title: 'Failed to delete link record', 
+          description: 'You can only delete your own link records.', 
+          variant: 'destructive' 
+        });
+      }
+    } catch (error) {
+      toast({ 
+        title: 'Failed to delete link record', 
+        description: 'Network error. Please try again.', 
+        variant: 'destructive' 
+      });
+    }
+  };
+
+  // Student Training Functions
+  const loadStudentTrainingRecords = async (studentId: number) => {
+    setStudentTrainingLoading(true);
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${studentId}/training-records/`));
+      if (res.ok) {
+        const data = await res.json();
+        setStudentTrainingRecords(Array.isArray(data) ? data : []);
+      } else {
+        setStudentTrainingRecords([]);
+      }
+    } catch (error) {
+      setStudentTrainingRecords([]);
+    } finally {
+      setStudentTrainingLoading(false);
+    }
+  };
+
+  const handleOpenStudentTrainingDialog = (record = null) => {
+    if (record) {
+      setEditingStudentTraining(record);
+      setStudentTrainingForm({
+        training_name: record.training_name,
+        training_type: record.training_type,
+        organization: record.organization || '',
+        start_date: record.start_date,
+        end_date: record.end_date,
+        duration_hours: record.duration_hours?.toString() || '',
+        skills_learned: record.skills_learned || '',
+        certification_obtained: record.certification_obtained,
+        certificate_name: record.certificate_name || '',
+        remarks: record.remarks || ''
+      });
+    } else {
+      setEditingStudentTraining(null);
+      setStudentTrainingForm({
+        training_name: '',
+        training_type: '',
+        organization: '',
+        start_date: '',
+        end_date: '',
+        duration_hours: '',
+        skills_learned: '',
+        certification_obtained: false,
+        certificate_name: '',
+        remarks: ''
+      });
+    }
+    setStudentTrainingDialogOpen(true);
+  };
+
+  const handleSaveStudentTraining = async () => {
+    if (selectedStudent == null) return;
+    try {
+      const url = editingStudentTraining
+        ? apiUrl(`/api/students/${selectedStudent.id}/training-records/${editingStudentTraining.id}/`)
+        : apiUrl(`/api/students/${selectedStudent.id}/training-records/`);
+      
+      const method = editingStudentTraining ? 'PUT' : 'POST';
+      
+      const payload = {
+        ...studentTrainingForm,
+        duration_hours: studentTrainingForm.duration_hours ? parseInt(studentTrainingForm.duration_hours) : null,
+      };
+      
+      const res = await authFetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        setStudentTrainingDialogOpen(false);
+        loadStudentTrainingRecords(selectedStudent.id);
+        toast({ 
+          title: editingStudentTraining ? 'Training record updated' : 'Training record added',
+          description: 'Your training record has been saved successfully.' 
+        });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        let errorMessage = 'Please try again.';
+        if (err.detail) {
+          errorMessage = err.detail;
+        } else if (typeof err === 'object') {
+          errorMessage = Object.entries(err).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`).join('; ');
+        }
+        toast({ 
+          title: 'Failed to save training record', 
+          description: errorMessage, 
+          variant: 'destructive' 
+        });
+      }
+    } catch (error) {
+      toast({ 
+        title: 'Failed to save training record', 
+        description: 'Network error. Please try again.', 
+        variant: 'destructive' 
+      });
+    }
+  };
+
+  const handleDeleteStudentTraining = async (recordId: number) => {
+    if (selectedStudent == null) return;
+    if (!confirm('Are you sure you want to delete this training record?')) return;
+    
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${selectedStudent.id}/training-records/${recordId}/`), {
+        method: 'DELETE'
+      });
+
+      if (res.ok) {
+        loadStudentTrainingRecords(selectedStudent.id);
+        toast({ 
+          title: 'Training record deleted', 
+          description: 'The training record has been removed.' 
+        });
+      } else {
+        toast({ 
+          title: 'Failed to delete training record', 
+          description: 'You can only delete your own training records.', 
+          variant: 'destructive' 
+        });
+      }
+    } catch (error) {
+      toast({ 
+        title: 'Failed to delete training record', 
+        description: 'Network error. Please try again.', 
+        variant: 'destructive' 
+      });
+    }
+  };
+
   const handleSaveStudentProfile = async () => {
     if (!selectedStudent) return;
     try {
@@ -619,6 +1296,10 @@ export const MentorLayout: React.FC = () => {
     loadStudentAchievements(student.id);
     loadMentorRemarks(student.id);
     loadCounsellingNotes(student.id);
+    loadStudentBehaviourRecords(student.id);
+    loadStudentCareerRecords(student.id);
+    loadStudentLinkRecords(student.id);
+    loadStudentTrainingRecords(student.id);
   };
 
   const loadAcademicRecords = async (studentId: number) => {
@@ -959,22 +1640,38 @@ export const MentorLayout: React.FC = () => {
               <Users className="w-4 h-4 mr-2" />
               My Students
             </TabsTrigger>
-            {selectedStudent && (
-              <>
-                <TabsTrigger value="academic-records">
-                  <FileText className="w-4 h-4 mr-2" />
-                  Academic Records
-                </TabsTrigger>
-                <TabsTrigger value="mentor-attendance">
-                  <CalendarIcon className="w-4 h-4 mr-2" />
-                  Attendance
-                </TabsTrigger>
-                <TabsTrigger value="counselling-notes">
-                  <FileText className="w-4 h-4 mr-2" />
-                  Counselling Notes
-                </TabsTrigger>
-              </>
-            )}
+            <TabsTrigger value="all-students">
+              <UserCheck className="w-4 h-4 mr-2" />
+              View Complete Profile
+            </TabsTrigger>
+            <TabsTrigger value="academic-records">
+              <FileText className="w-4 h-4 mr-2" />
+              Academic Profile
+            </TabsTrigger>
+            <TabsTrigger value="mentor-attendance">
+              <CalendarIcon className="w-4 h-4 mr-2" />
+              Attendance
+            </TabsTrigger>
+            <TabsTrigger value="training">
+              <TrendingUp className="w-4 h-4 mr-2" />
+              Training
+            </TabsTrigger>
+            <TabsTrigger value="career">
+              <Briefcase className="w-4 h-4 mr-2" />
+              Career
+            </TabsTrigger>
+            <TabsTrigger value="behaviour">
+              <Star className="w-4 h-4 mr-2" />
+              Behaviour
+            </TabsTrigger>
+            <TabsTrigger value="student-links">
+              <LinkIcon className="w-4 h-4 mr-2" />
+              Student Links
+            </TabsTrigger>
+            <TabsTrigger value="counselling-notes">
+              <Heart className="w-4 h-4 mr-2" />
+              Counselling Notes
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="students">
@@ -1198,12 +1895,172 @@ export const MentorLayout: React.FC = () => {
             </div>
           </TabsContent>
 
+          {/* All Students Tab - View Complete Profile */}
+          <TabsContent value="all-students">
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-900">View Complete Profile</h2>
+                  <p className="text-gray-600">View all students in the system</p>
+                </div>
+              </div>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>All Students</CardTitle>
+                  <CardDescription>
+                    Complete list of all students with their profiles
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {allStudentsLoading ? (
+                    <div className="text-center py-8 text-gray-500">Loading students...</div>
+                  ) : allStudents.length === 0 ? (
+                    <div className="text-center py-8 text-gray-500">No students found</div>
+                  ) : (
+                    <div className="space-y-4">
+                      {allStudents.map((student) => (
+                        <div
+                          key={student.id}
+                          className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
+                          onClick={() => {
+                            setSelectedStudent(student);
+                            setStudentProfileOpen(true);
+                          }}
+                        >
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-3 mb-2">
+                                <h3 className="font-semibold text-gray-900">
+                                  {student.full_name || student.username}
+                                </h3>
+                                {student.is_detained && (
+                                  <Badge variant="destructive">Detained</Badge>
+                                )}
+                              </div>
+                              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-gray-600">
+                                <div>
+                                  <span className="font-medium">Roll No:</span> {student.roll_number || 'N/A'}
+                                </div>
+                                <div>
+                                  <span className="font-medium">Year:</span> {student.year || 'N/A'}
+                                </div>
+                                <div>
+                                  <span className="font-medium">Dept:</span> {student.department || 'N/A'}
+                                </div>
+                                <div>
+                                  <span className="font-medium">Section:</span> {student.section || 'N/A'}
+                                </div>
+                              </div>
+                              <div className="mt-2 text-sm text-gray-600">
+                                <span className="font-medium">Email:</span> {student.email}
+                              </div>
+                              {student.phone && (
+                                <div className="text-sm text-gray-600">
+                                  <span className="font-medium">Phone:</span> {student.phone}
+                                </div>
+                              )}
+                            </div>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedStudent(student);
+                                setStudentProfileOpen(true);
+                              }}
+                            >
+                              <User className="w-4 h-4 mr-2" />
+                              View Profile
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
           {/* Academic Records Tab */}
-          {selectedStudent && (
-            <TabsContent value="academic-records">
+          <TabsContent value="academic-records">
+            {!selectedStudent ? (
               <div className="space-y-6">
                 <div className="flex items-center justify-between">
                   <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Academic Records</h2>
+                    <p className="text-gray-600">Select a student to view their academic records</p>
+                  </div>
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>All Students</CardTitle>
+                    <CardDescription>
+                      Click on a student to view their academic records
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {allStudentsLoading ? (
+                      <div className="text-center py-8 text-gray-500">Loading students...</div>
+                    ) : allStudents.length === 0 ? (
+                      <div className="text-center py-8 text-gray-500">No students found</div>
+                    ) : (
+                      <div className="space-y-3">
+                        {allStudents.map((student) => (
+                          <div
+                            key={student.id}
+                            className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
+                            onClick={() => {
+                              setSelectedStudent(student);
+                              loadAcademicRecords(student.id);
+                            }}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-3 mb-2">
+                                  <h3 className="font-semibold text-gray-900">
+                                    {student.full_name || student.username}
+                                  </h3>
+                                  {student.is_detained && (
+                                    <Badge variant="destructive">Detained</Badge>
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-gray-600">
+                                  <div>
+                                    <span className="font-medium">Roll No:</span> {student.roll_number || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Year:</span> {student.year || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Dept:</span> {student.department || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Section:</span> {student.section || 'N/A'}
+                                  </div>
+                                </div>
+                              </div>
+                              <Button variant="outline" size="sm">
+                                <FileText className="w-4 h-4 mr-2" />
+                                View Records
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Button variant="ghost" size="sm" onClick={() => setSelectedStudent(null)} className="mb-2">
+                      ← Back to All Students
+                    </Button>
                     <h2 className="text-2xl font-bold text-gray-900">Academic Records</h2>
                     <p className="text-gray-600">
                       {selectedStudent.full_name || selectedStudent.username} - {selectedStudent.roll_number || 'N/A'}
@@ -1317,15 +2174,87 @@ export const MentorLayout: React.FC = () => {
                   </CardContent>
                 </Card>
               </div>
+                )}
             </TabsContent>
-          )}
 
           {/* Mentor Attendance Tab */}
-          {selectedStudent && (
-            <TabsContent value="mentor-attendance">
+          <TabsContent value="mentor-attendance">
+            {!selectedStudent ? (
               <div className="space-y-6">
                 <div className="flex items-center justify-between">
                   <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Attendance Records</h2>
+                    <p className="text-gray-600">Select a student to view their attendance records</p>
+                  </div>
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>All Students</CardTitle>
+                    <CardDescription>
+                      Click on a student to view their attendance records
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {allStudentsLoading ? (
+                      <div className="text-center py-8 text-gray-500">Loading students...</div>
+                    ) : allStudents.length === 0 ? (
+                      <div className="text-center py-8 text-gray-500">No students found</div>
+                    ) : (
+                      <div className="space-y-3">
+                        {allStudents.map((student) => (
+                          <div
+                            key={student.id}
+                            className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
+                            onClick={() => {
+                              setSelectedStudent(student);
+                              loadMentorAttendance(student.id);
+                            }}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-3 mb-2">
+                                  <h3 className="font-semibold text-gray-900">
+                                    {student.full_name || student.username}
+                                  </h3>
+                                  {student.is_detained && (
+                                    <Badge variant="destructive">Detained</Badge>
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-gray-600">
+                                  <div>
+                                    <span className="font-medium">Roll No:</span> {student.roll_number || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Year:</span> {student.year || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Dept:</span> {student.department || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Section:</span> {student.section || 'N/A'}
+                                  </div>
+                                </div>
+                              </div>
+                              <Button variant="outline" size="sm">
+                                <CalendarIcon className="w-4 h-4 mr-2" />
+                                View Attendance
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Button variant="ghost" size="sm" onClick={() => setSelectedStudent(null)} className="mb-2">
+                      ← Back to All Students
+                    </Button>
                     <h2 className="text-2xl font-bold text-gray-900">Attendance Records</h2>
                     <p className="text-gray-600">
                       {selectedStudent.full_name || selectedStudent.username} - {selectedStudent.roll_number || 'N/A'}
@@ -1425,21 +2354,93 @@ export const MentorLayout: React.FC = () => {
                   </CardContent>
                 </Card>
               </div>
+                )}
             </TabsContent>
-          )}
 
           {/* Counselling Notes Tab */}
-          {selectedStudent && (
-            <TabsContent value="counselling-notes">
+          <TabsContent value="counselling-notes">
+            {!selectedStudent ? (
               <div className="space-y-6">
                 <div className="flex items-center justify-between">
                   <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Counselling Notes</h2>
+                    <p className="text-gray-600">Select a student to view their counselling notes</p>
+                  </div>
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>All Students</CardTitle>
+                    <CardDescription>
+                      Click on a student to view their counselling notes
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {allStudentsLoading ? (
+                      <div className="text-center py-8 text-gray-500">Loading students...</div>
+                    ) : allStudents.length === 0 ? (
+                      <div className="text-center py-8 text-gray-500">No students found</div>
+                    ) : (
+                      <div className="space-y-3">
+                        {allStudents.map((student) => (
+                          <div
+                            key={student.id}
+                            className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
+                            onClick={() => {
+                              setSelectedStudent(student);
+                              loadCounsellingNotes(student.id);
+                            }}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-3 mb-2">
+                                  <h3 className="font-semibold text-gray-900">
+                                    {student.full_name || student.username}
+                                  </h3>
+                                  {student.is_detained && (
+                                    <Badge variant="destructive">Detained</Badge>
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-gray-600">
+                                  <div>
+                                    <span className="font-medium">Roll No:</span> {student.roll_number || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Year:</span> {student.year || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Dept:</span> {student.department || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Section:</span> {student.section || 'N/A'}
+                                  </div>
+                                </div>
+                              </div>
+                              <Button variant="outline" size="sm">
+                                <Heart className="w-4 h-4 mr-2" />
+                                View Notes
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Button variant="ghost" size="sm" onClick={() => setSelectedStudent(null)} className="mb-2">
+                      ← Back to All Students
+                    </Button>
                     <h2 className="text-2xl font-bold text-gray-900">Counselling Notes</h2>
                     <p className="text-gray-600">
                       {selectedStudent.full_name || selectedStudent.username} - {selectedStudent.roll_number || 'N/A'}
                     </p>
                   </div>
-                  <Button onClick={() => handleOpenCounsellingNoteDialog()} className="bg-purple-600 hover:bg-purple-700">
+                    <Button onClick={() => handleOpenCounsellingNoteDialog()} className="bg-purple-600 hover:bg-purple-700">
                     <Plus className="w-4 h-4 mr-2" />
                     Add Counselling Note
                   </Button>
@@ -1488,8 +2489,744 @@ export const MentorLayout: React.FC = () => {
                   </CardContent>
                 </Card>
               </div>
+                )}
             </TabsContent>
-          )}
+
+          {/* Training Tab */}
+          <TabsContent value="training">
+            {!selectedStudent ? (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Training Records</h2>
+                    <p className="text-gray-600">Select a student to view their training records</p>
+                  </div>
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>All Students</CardTitle>
+                    <CardDescription>
+                      Click on a student to view their training records
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {allStudentsLoading ? (
+                      <div className="text-center py-8 text-gray-500">Loading students...</div>
+                    ) : allStudents.length === 0 ? (
+                      <div className="text-center py-8 text-gray-500">No students found</div>
+                    ) : (
+                      <div className="space-y-3">
+                        {allStudents.map((student) => (
+                          <div
+                            key={student.id}
+                            className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
+                            onClick={() => {
+                              setSelectedStudent(student);
+                              loadStudentTrainingRecords(student.id);
+                            }}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-3 mb-2">
+                                  <h3 className="font-semibold text-gray-900">
+                                    {student.full_name || student.username}
+                                  </h3>
+                                  {student.is_detained && (
+                                    <Badge variant="destructive">Detained</Badge>
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-gray-600">
+                                  <div>
+                                    <span className="font-medium">Roll No:</span> {student.roll_number || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Year:</span> {student.year || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Dept:</span> {student.department || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Section:</span> {student.section || 'N/A'}
+                                  </div>
+                                </div>
+                              </div>
+                              <Button variant="outline" size="sm">
+                                <TrendingUp className="w-4 h-4 mr-2" />
+                                View Training
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Button variant="ghost" size="sm" onClick={() => setSelectedStudent(null)} className="mb-2">
+                      ← Back to All Students
+                    </Button>
+                    <h2 className="text-2xl font-bold text-gray-900">Training Records</h2>
+                    <p className="text-gray-600">
+                      {selectedStudent.full_name || selectedStudent.username} - {selectedStudent.roll_number || 'N/A'}
+                    </p>
+                  </div>
+                  <Button onClick={() => handleOpenStudentTrainingDialog()} className="bg-blue-600 hover:bg-blue-700">
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Training Record
+                  </Button>
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Training Programs</CardTitle>
+                    <CardDescription>
+                      Track and manage training records for {selectedStudent.full_name || selectedStudent.username}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {studentTrainingLoading ? (
+                      <div className="text-center py-8 text-gray-500">Loading training records...</div>
+                    ) : studentTrainingRecords.length === 0 ? (
+                      <div className="text-center py-12">
+                        <TrendingUp className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                        <p className="text-gray-500 mb-2">No training records found</p>
+                        <p className="text-sm text-gray-400">Click "Add Training Record" to start tracking training programs</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {studentTrainingRecords.map((record) => (
+                          <div key={record.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                            <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <h3 className="font-semibold text-gray-900">{record.training_name}</h3>
+                                  <Badge variant="outline" className="capitalize">{record.training_type.replace('_', ' ')}</Badge>
+                                  {record.certification_obtained && (
+                                    <Badge className="bg-green-100 text-green-800">Certified</Badge>
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+                                  <div>
+                                    <span className="text-gray-600">Organization:</span>
+                                    <span className="ml-1 font-medium">{record.organization || 'N/A'}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-gray-600">Duration:</span>
+                                    <span className="ml-1 font-medium">{record.duration_hours ? `${record.duration_hours} hours` : 'N/A'}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-gray-600">Period:</span>
+                                    <span className="ml-1 font-medium">
+                                      {format(parseISO(record.start_date), 'MMM yyyy')} - {format(parseISO(record.end_date), 'MMM yyyy')}
+                                    </span>
+                                  </div>
+                                </div>
+                                {record.skills_learned && (
+                                  <div className="mt-2 text-sm text-gray-600">
+                                    <span className="font-medium">Skills:</span> {record.skills_learned}
+                                  </div>
+                                )}
+                                {record.certificate_name && (
+                                  <div className="mt-2 text-sm text-gray-600">
+                                    <span className="font-medium">Certificate:</span> {record.certificate_name}
+                                  </div>
+                                )}
+                                {record.remarks && (
+                                  <div className="mt-2 text-sm text-gray-600">
+                                    <span className="font-medium">Remarks:</span> {record.remarks}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleOpenStudentTrainingDialog(record)}
+                                >
+                                  <Edit className="w-4 h-4 mr-1" />
+                                  Edit
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleDeleteStudentTraining(record.id)}
+                                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                >
+                                  <Trash2 className="w-4 h-4 mr-1" />
+                                  Delete
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+                )}
+            </TabsContent>
+
+          {/* Career Tab */}
+          <TabsContent value="career">
+            {!selectedStudent ? (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Career Records</h2>
+                    <p className="text-gray-600">Select a student to view their career records</p>
+                  </div>
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>All Students</CardTitle>
+                    <CardDescription>
+                      Click on a student to view their career records
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {allStudentsLoading ? (
+                      <div className="text-center py-8 text-gray-500">Loading students...</div>
+                    ) : allStudents.length === 0 ? (
+                      <div className="text-center py-8 text-gray-500">No students found</div>
+                    ) : (
+                      <div className="space-y-3">
+                        {allStudents.map((student) => (
+                          <div
+                            key={student.id}
+                            className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
+                            onClick={() => {
+                              setSelectedStudent(student);
+                              loadStudentCareerRecords(student.id);
+                            }}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-3 mb-2">
+                                  <h3 className="font-semibold text-gray-900">
+                                    {student.full_name || student.username}
+                                  </h3>
+                                  {student.is_detained && (
+                                    <Badge variant="destructive">Detained</Badge>
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-gray-600">
+                                  <div>
+                                    <span className="font-medium">Roll No:</span> {student.roll_number || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Year:</span> {student.year || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Dept:</span> {student.department || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Section:</span> {student.section || 'N/A'}
+                                  </div>
+                                </div>
+                              </div>
+                              <Button variant="outline" size="sm">
+                                <Briefcase className="w-4 h-4 mr-2" />
+                                View Career
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Button variant="ghost" size="sm" onClick={() => setSelectedStudent(null)} className="mb-2">
+                      ← Back to All Students
+                    </Button>
+                    <h2 className="text-2xl font-bold text-gray-900">Career Records</h2>
+                    <p className="text-gray-600">
+                      {selectedStudent.full_name || selectedStudent.username} - {selectedStudent.roll_number || 'N/A'}
+                    </p>
+                  </div>
+                  <Button onClick={() => handleOpenStudentCareerDialog()} className="bg-green-600 hover:bg-green-700">
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Career Record
+                  </Button>
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Career Information</CardTitle>
+                    <CardDescription>
+                      Track and manage career records for {selectedStudent.full_name || selectedStudent.username}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {studentCareerLoading ? (
+                      <div className="text-center py-8 text-gray-500">Loading career records...</div>
+                    ) : studentCareerRecords.length === 0 ? (
+                      <div className="text-center py-12">
+                        <Briefcase className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                        <p className="text-gray-500 mb-2">No career records found</p>
+                        <p className="text-sm text-gray-400">Click "Add Career Record" to start tracking career information</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {studentCareerRecords.map((record) => (
+                          <div key={record.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                            <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <h3 className="font-semibold text-gray-900">{record.career_status.replace('_', ' ')}</h3>
+                                  {record.company_name && (
+                                    <Badge variant="outline">{record.company_name}</Badge>
+                                  )}
+                                  {record.job_role && (
+                                    <Badge variant="secondary">{record.job_role}</Badge>
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+                                  {record.placement_date && (
+                                    <div>
+                                      <span className="text-gray-600">Placement Date:</span>
+                                      <span className="ml-1 font-medium">{format(parseISO(record.placement_date), 'PPP')}</span>
+                                    </div>
+                                  )}
+                                  {record.salary_package && (
+                                    <div>
+                                      <span className="text-gray-600">Salary:</span>
+                                      <span className="ml-1 font-medium">{record.salary_package}</span>
+                                    </div>
+                                  )}
+                                  {record.resume_status && (
+                                    <div>
+                                      <span className="text-gray-600">Resume Status:</span>
+                                      <span className="ml-1 font-medium">{record.resume_status}</span>
+                                    </div>
+                                  )}
+                                </div>
+                                {record.skills_for_career && (
+                                  <div className="mt-2 text-sm text-gray-600">
+                                    <span className="font-medium">Skills:</span> {record.skills_for_career}
+                                  </div>
+                                )}
+                                {record.career_goals && (
+                                  <div className="mt-2 text-sm text-gray-600">
+                                    <span className="font-medium">Career Goals:</span> {record.career_goals}
+                                  </div>
+                                )}
+                                {record.guidance_provided && (
+                                  <div className="mt-2 text-sm text-gray-600">
+                                    <span className="font-medium">Guidance Provided:</span> {record.guidance_provided}
+                                  </div>
+                                )}
+                                {record.remarks && (
+                                  <div className="mt-2 text-sm text-gray-600">
+                                    <span className="font-medium">Remarks:</span> {record.remarks}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleOpenStudentCareerDialog(record)}
+                                >
+                                  <Edit className="w-4 h-4 mr-1" />
+                                  Edit
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleDeleteStudentCareer(record.id)}
+                                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                >
+                                  <Trash2 className="w-4 h-4 mr-1" />
+                                  Delete
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+                )}
+            </TabsContent>
+
+          {/* Behaviour Tab */}
+          <TabsContent value="behaviour">
+            {!selectedStudent ? (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Behaviour Records</h2>
+                    <p className="text-gray-600">Select a student to view their behaviour records</p>
+                  </div>
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>All Students</CardTitle>
+                    <CardDescription>
+                      Click on a student to view their behaviour records
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {allStudentsLoading ? (
+                      <div className="text-center py-8 text-gray-500">Loading students...</div>
+                    ) : allStudents.length === 0 ? (
+                      <div className="text-center py-8 text-gray-500">No students found</div>
+                    ) : (
+                      <div className="space-y-3">
+                        {allStudents.map((student) => (
+                          <div
+                            key={student.id}
+                            className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
+                            onClick={() => {
+                              setSelectedStudent(student);
+                              loadStudentBehaviourRecords(student.id);
+                            }}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-3 mb-2">
+                                  <h3 className="font-semibold text-gray-900">
+                                    {student.full_name || student.username}
+                                  </h3>
+                                  {student.is_detained && (
+                                    <Badge variant="destructive">Detained</Badge>
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-gray-600">
+                                  <div>
+                                    <span className="font-medium">Roll No:</span> {student.roll_number || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Year:</span> {student.year || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Dept:</span> {student.department || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Section:</span> {student.section || 'N/A'}
+                                  </div>
+                                </div>
+                              </div>
+                              <Button variant="outline" size="sm">
+                                <Star className="w-4 h-4 mr-2" />
+                                View Behaviour
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Button variant="ghost" size="sm" onClick={() => setSelectedStudent(null)} className="mb-2">
+                      ← Back to All Students
+                    </Button>
+                    <h2 className="text-2xl font-bold text-gray-900">Behaviour Records</h2>
+                    <p className="text-gray-600">
+                      {selectedStudent.full_name || selectedStudent.username} - {selectedStudent.roll_number || 'N/A'}
+                    </p>
+                  </div>
+                  <Button onClick={() => handleOpenStudentBehaviourDialog()} className="bg-amber-600 hover:bg-amber-700">
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Behaviour Record
+                  </Button>
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Behaviour Assessment</CardTitle>
+                    <CardDescription>
+                      Track and manage behaviour records for {selectedStudent.full_name || selectedStudent.username}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {studentBehaviourLoading ? (
+                      <div className="text-center py-8 text-gray-500">Loading behaviour records...</div>
+                    ) : studentBehaviourRecords.length === 0 ? (
+                      <div className="text-center py-12">
+                        <Star className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                        <p className="text-gray-500 mb-2">No behaviour records found</p>
+                        <p className="text-sm text-gray-400">Click "Add Behaviour Record" to start tracking behaviour assessment</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {studentBehaviourRecords.map((record) => (
+                          <div key={record.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                            <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <h3 className="font-semibold text-gray-900">{record.behaviour_category.replace('_', ' ')}</h3>
+                                  <Badge 
+                                    className={
+                                      record.rating >= 4 
+                                        ? 'bg-green-100 text-green-800' 
+                                        : record.rating >= 3 
+                                          ? 'bg-yellow-100 text-yellow-800' 
+                                          : 'bg-red-100 text-red-800'
+                                    }
+                                  >
+                                    Rating: {record.rating}/5
+                                  </Badge>
+                                  <Badge variant="outline">{format(parseISO(record.assessment_date), 'PPP')}</Badge>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                                  {record.positive_aspects && (
+                                    <div>
+                                      <span className="text-gray-600">Positive Aspects:</span>
+                                      <span className="ml-1 font-medium">{record.positive_aspects}</span>
+                                    </div>
+                                  )}
+                                  {record.areas_for_improvement && (
+                                    <div>
+                                      <span className="text-gray-600">Areas for Improvement:</span>
+                                      <span className="ml-1 font-medium">{record.areas_for_improvement}</span>
+                                    </div>
+                                  )}
+                                  {record.action_plan && (
+                                    <div className="md:col-span-2">
+                                      <span className="text-gray-600">Action Plan:</span>
+                                      <span className="ml-1 font-medium">{record.action_plan}</span>
+                                    </div>
+                                  )}
+                                </div>
+                                {record.remarks && (
+                                  <div className="mt-2 text-sm text-gray-600">
+                                    <span className="font-medium">Remarks:</span> {record.remarks}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleOpenStudentBehaviourDialog(record)}
+                                >
+                                  <Edit className="w-4 h-4 mr-1" />
+                                  Edit
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleDeleteStudentBehaviour(record.id)}
+                                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                >
+                                  <Trash2 className="w-4 h-4 mr-1" />
+                                  Delete
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+                )}
+            </TabsContent>
+
+          {/* Student Links Tab */}
+          <TabsContent value="student-links">
+            {!selectedStudent ? (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Student Links</h2>
+                    <p className="text-gray-600">Select a student to view their shared links</p>
+                  </div>
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>All Students</CardTitle>
+                    <CardDescription>
+                      Click on a student to view their shared links
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {allStudentsLoading ? (
+                      <div className="text-center py-8 text-gray-500">Loading students...</div>
+                    ) : allStudents.length === 0 ? (
+                      <div className="text-center py-8 text-gray-500">No students found</div>
+                    ) : (
+                      <div className="space-y-3">
+                        {allStudents.map((student) => (
+                          <div
+                            key={student.id}
+                            className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
+                            onClick={() => {
+                              setSelectedStudent(student);
+                              loadStudentLinkRecords(student.id);
+                            }}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-3 mb-2">
+                                  <h3 className="font-semibold text-gray-900">
+                                    {student.full_name || student.username}
+                                  </h3>
+                                  {student.is_detained && (
+                                    <Badge variant="destructive">Detained</Badge>
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-gray-600">
+                                  <div>
+                                    <span className="font-medium">Roll No:</span> {student.roll_number || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Year:</span> {student.year || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Dept:</span> {student.department || 'N/A'}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Section:</span> {student.section || 'N/A'}
+                                  </div>
+                                </div>
+                              </div>
+                              <Button variant="outline" size="sm">
+                                <LinkIcon className="w-4 h-4 mr-2" />
+                                View Links
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Button variant="ghost" size="sm" onClick={() => setSelectedStudent(null)} className="mb-2">
+                      ← Back to All Students
+                    </Button>
+                    <h2 className="text-2xl font-bold text-gray-900">Student Links</h2>
+                    <p className="text-gray-600">
+                      {selectedStudent.full_name || selectedStudent.username} - {selectedStudent.roll_number || 'N/A'}
+                    </p>
+                  </div>
+                  <Button onClick={() => handleOpenStudentLinkDialog()} className="bg-indigo-600 hover:bg-indigo-700">
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Link
+                  </Button>
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Shared Resources</CardTitle>
+                    <CardDescription>
+                      Track and manage shared links for {selectedStudent.full_name || selectedStudent.username}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {studentLinkLoading ? (
+                      <div className="text-center py-8 text-gray-500">Loading link records...</div>
+                    ) : studentLinkRecords.length === 0 ? (
+                      <div className="text-center py-12">
+                        <LinkIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                        <p className="text-gray-500 mb-2">No link records found</p>
+                        <p className="text-sm text-gray-400">Click "Add Link" to start sharing resources</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {studentLinkRecords.map((record) => (
+                          <div key={record.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                            <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <h3 className="font-semibold text-gray-900">{record.link_title}</h3>
+                                  <Badge variant="outline" className="capitalize">{record.link_category.replace('_', ' ')}</Badge>
+                                  <Badge 
+                                    className={
+                                      record.status === 'completed' 
+                                        ? 'bg-green-100 text-green-800' 
+                                        : record.status === 'in_progress' 
+                                          ? 'bg-blue-100 text-blue-800' 
+                                          : 'bg-gray-100 text-gray-800'
+                                    }
+                                  >
+                                    {record.status}
+                                  </Badge>
+                                  {record.importance && (
+                                    <Badge variant="secondary">{record.importance}</Badge>
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                                  <div className="md:col-span-2">
+                                    <a 
+                                      href={record.link_url} 
+                                      target="_blank" 
+                                      rel="noopener noreferrer"
+                                      className="text-blue-600 hover:underline break-all"
+                                    >
+                                      {record.link_url}
+                                    </a>
+                                  </div>
+                                  {record.description && (
+                                    <div className="md:col-span-2">
+                                      <span className="text-gray-600">Description:</span>
+                                      <span className="ml-1 font-medium">{record.description}</span>
+                                    </div>
+                                  )}
+                                </div>
+                                {record.remarks && (
+                                  <div className="mt-2 text-sm text-gray-600">
+                                    <span className="font-medium">Remarks:</span> {record.remarks}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleOpenStudentLinkDialog(record)}
+                                >
+                                  <Edit className="w-4 h-4 mr-1" />
+                                  Edit
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleDeleteStudentLink(record.id)}
+                                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                >
+                                  <Trash2 className="w-4 h-4 mr-1" />
+                                  Delete
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+                )}
+            </TabsContent>
         </Tabs>
       </main>
 
@@ -2269,6 +4006,246 @@ export const MentorLayout: React.FC = () => {
                 })()}
               </div>
 
+              {/* Training Section */}
+              <div className="space-y-4 bg-teal-50 p-4 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-lg flex items-center gap-2 text-teal-900">
+                    <TrendingUp className="w-5 h-5" />
+                    Training Records
+                  </h3>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => {
+                      if (selectedStudent) {
+                        loadStudentTrainingRecords(selectedStudent.id);
+                        setStudentTrainingDialogOpen(true);
+                      }
+                    }}
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Training
+                  </Button>
+                </div>
+                <div className="grid gap-2">
+                  {studentTrainingRecords.length === 0 ? (
+                    <p className="text-sm text-gray-600">No training records recorded yet.</p>
+                  ) : (
+                    studentTrainingRecords.slice(0, 3).map((training) => (
+                      <div key={training.id} className="bg-white p-3 rounded-lg border">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge variant="secondary" className="capitalize text-xs">
+                            {training.training_type.replace('_', ' ')}
+                          </Badge>
+                          <Badge variant="outline" className="text-xs">
+                            {format(parseISO(training.start_date), 'MMM yyyy')}
+                          </Badge>
+                          {training.certification_obtained && (
+                            <Badge className="bg-green-100 text-green-800 text-xs">Certified</Badge>
+                          )}
+                        </div>
+                        <p className="font-medium text-sm">{training.training_name}</p>
+                        <p className="text-xs text-gray-600">{training.organization || 'N/A'}</p>
+                      </div>
+                    ))
+                  )}
+                  {studentTrainingRecords.length > 3 && (
+                    <p className="text-xs text-gray-500 text-center">
+                      And {studentTrainingRecords.length - 3} more training records...
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Career Section */}
+              <div className="space-y-4 bg-emerald-50 p-4 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-lg flex items-center gap-2 text-emerald-900">
+                    <Briefcase className="w-5 h-5" />
+                    Career Information
+                  </h3>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => {
+                      if (selectedStudent) {
+                        loadStudentCareerRecords(selectedStudent.id);
+                        setStudentCareerDialogOpen(true);
+                      }
+                    }}
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Career Info
+                  </Button>
+                </div>
+                <div className="grid gap-2">
+                  {studentCareerRecords.length === 0 ? (
+                    <p className="text-sm text-gray-600">No career records recorded yet.</p>
+                  ) : (
+                    studentCareerRecords.slice(0, 3).map((career) => (
+                      <div key={career.id} className="bg-white p-3 rounded-lg border">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge 
+                            className={`capitalize text-xs ${
+                              career.career_status === 'placed' 
+                                ? 'bg-green-100 text-green-800' 
+                                : career.career_status === 'seeking' 
+                                  ? 'bg-yellow-100 text-yellow-800' 
+                                  : 'bg-gray-100 text-gray-800'
+                            }`}
+                          >
+                            {career.career_status.replace('_', ' ')}
+                          </Badge>
+                          {career.company_name && (
+                            <Badge variant="outline" className="text-xs">{career.company_name}</Badge>
+                          )}
+                        </div>
+                        <p className="text-sm">{career.job_role || 'N/A'}</p>
+                        {career.placement_date && (
+                          <p className="text-xs text-gray-600">
+                            Placed: {format(parseISO(career.placement_date), 'PPP')}
+                          </p>
+                        )}
+                      </div>
+                    ))
+                  )}
+                  {studentCareerRecords.length > 3 && (
+                    <p className="text-xs text-gray-500 text-center">
+                      And {studentCareerRecords.length - 3} more career records...
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Behaviour Section */}
+              <div className="space-y-4 bg-amber-50 p-4 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-lg flex items-center gap-2 text-amber-900">
+                    <Star className="w-5 h-5" />
+                    Behaviour Assessment
+                  </h3>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => {
+                      if (selectedStudent) {
+                        loadStudentBehaviourRecords(selectedStudent.id);
+                        setStudentBehaviourDialogOpen(true);
+                      }
+                    }}
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Behaviour
+                  </Button>
+                </div>
+                <div className="grid gap-2">
+                  {studentBehaviourRecords.length === 0 ? (
+                    <p className="text-sm text-gray-600">No behaviour records recorded yet.</p>
+                  ) : (
+                    studentBehaviourRecords.slice(0, 3).map((behaviour) => (
+                      <div key={behaviour.id} className="bg-white p-3 rounded-lg border">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge variant="secondary" className="capitalize text-xs">
+                            {behaviour.behaviour_category.replace('_', ' ')}
+                          </Badge>
+                          <Badge 
+                            className={`text-xs ${
+                              behaviour.rating >= 4 
+                                ? 'bg-green-100 text-green-800' 
+                                : behaviour.rating >= 3 
+                                  ? 'bg-yellow-100 text-yellow-800' 
+                                  : 'bg-red-100 text-red-800'
+                            }`}
+                          >
+                            Rating: {behaviour.rating}/5
+                          </Badge>
+                          <Badge variant="outline" className="text-xs">
+                            {format(parseISO(behaviour.assessment_date), 'PPP')}
+                          </Badge>
+                        </div>
+                        <p className="text-sm mb-1">{behaviour.positive_aspects || 'No positive aspects recorded'}</p>
+                        {behaviour.areas_for_improvement && (
+                          <p className="text-xs text-gray-600">
+                            <span className="font-medium">Improvement:</span> {behaviour.areas_for_improvement}
+                          </p>
+                        )}
+                      </div>
+                    ))
+                  )}
+                  {studentBehaviourRecords.length > 3 && (
+                    <p className="text-xs text-gray-500 text-center">
+                      And {studentBehaviourRecords.length - 3} more behaviour records...
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Student Links Section */}
+              <div className="space-y-4 bg-indigo-50 p-4 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-lg flex items-center gap-2 text-indigo-900">
+                    <LinkIcon className="w-5 h-5" />
+                    Shared Resources
+                  </h3>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => {
+                      if (selectedStudent) {
+                        loadStudentLinkRecords(selectedStudent.id);
+                        setStudentLinkDialogOpen(true);
+                      }
+                    }}
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Link
+                  </Button>
+                </div>
+                <div className="grid gap-2">
+                  {studentLinkRecords.length === 0 ? (
+                    <p className="text-sm text-gray-600">No shared resources yet.</p>
+                  ) : (
+                    studentLinkRecords.slice(0, 3).map((link) => (
+                      <div key={link.id} className="bg-white p-3 rounded-lg border">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge variant="secondary" className="capitalize text-xs">
+                            {link.link_category.replace('_', ' ')}
+                          </Badge>
+                          <Badge 
+                            className={`text-xs ${
+                              link.status === 'completed' 
+                                ? 'bg-green-100 text-green-800' 
+                                : link.status === 'in_progress' 
+                                  ? 'bg-blue-100 text-blue-800' 
+                                  : 'bg-gray-100 text-gray-800'
+                            }`}
+                          >
+                            {link.status}
+                          </Badge>
+                          {link.importance && (
+                            <Badge variant="outline" className="text-xs">{link.importance}</Badge>
+                          )}
+                        </div>
+                        <p className="font-medium text-sm">{link.link_title}</p>
+                        <a 
+                          href={link.link_url} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="text-xs text-blue-600 hover:underline break-all"
+                        >
+                          {link.link_url}
+                        </a>
+                      </div>
+                    ))
+                  )}
+                  {studentLinkRecords.length > 3 && (
+                    <p className="text-xs text-gray-500 text-center">
+                      And {studentLinkRecords.length - 3} more links...
+                    </p>
+                  )}
+                </div>
+              </div>
+
               {/* Assignment Notes */}
               {selectedStudent.assignment_notes && (
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
@@ -2750,6 +4727,528 @@ export const MentorLayout: React.FC = () => {
               </Button>
               <Button onClick={handleSaveCounsellingNote}>
                 {editingCounsellingNote ? 'Update Note' : 'Add Note'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Student Behaviour Dialog */}
+      <Dialog open={studentBehaviourDialogOpen} onOpenChange={setStudentBehaviourDialogOpen}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <DialogTitle>
+                  {editingStudentBehaviour ? 'Edit Behaviour Record' : 'Add Behaviour Record'}
+                </DialogTitle>
+                <p className="text-sm text-gray-500 mt-1">
+                  {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setStudentBehaviourDialogOpen(false)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="behaviour_category">Behaviour Category *</Label>
+                <Select
+                  value={studentBehaviourForm.behaviour_category}
+                  onValueChange={(value) => setStudentBehaviourForm({ ...studentBehaviourForm, behaviour_category: value })}
+                >
+                  <SelectTrigger id="behaviour_category">
+                    <SelectValue placeholder="Select category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="discipline">Discipline</SelectItem>
+                    <SelectItem value="participation">Class Participation</SelectItem>
+                    <SelectItem value="teamwork">Teamwork</SelectItem>
+                    <SelectItem value="leadership">Leadership</SelectItem>
+                    <SelectItem value="communication">Communication</SelectItem>
+                    <SelectItem value="time_management">Time Management</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="rating">Rating (1-5) *</Label>
+                <Select
+                  value={studentBehaviourForm.rating}
+                  onValueChange={(value) => setStudentBehaviourForm({ ...studentBehaviourForm, rating: value })}
+                >
+                  <SelectTrigger id="rating">
+                    <SelectValue placeholder="Select rating" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">1 - Poor</SelectItem>
+                    <SelectItem value="2">2 - Below Average</SelectItem>
+                    <SelectItem value="3">3 - Average</SelectItem>
+                    <SelectItem value="4">4 - Good</SelectItem>
+                    <SelectItem value="5">5 - Excellent</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="assessment_date">Assessment Date *</Label>
+              <Input
+                id="assessment_date"
+                type="date"
+                value={studentBehaviourForm.assessment_date}
+                onChange={(e) => setStudentBehaviourForm({ ...studentBehaviourForm, assessment_date: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="positive_aspects">Positive Aspects</Label>
+              <textarea
+                id="positive_aspects"
+                className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="Positive aspects observed..."
+                value={studentBehaviourForm.positive_aspects}
+                onChange={(e) => setStudentBehaviourForm({ ...studentBehaviourForm, positive_aspects: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="areas_for_improvement">Areas for Improvement</Label>
+              <textarea
+                id="areas_for_improvement"
+                className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="Areas needing improvement..."
+                value={studentBehaviourForm.areas_for_improvement}
+                onChange={(e) => setStudentBehaviourForm({ ...studentBehaviourForm, areas_for_improvement: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="action_plan">Action Plan</Label>
+              <textarea
+                id="action_plan"
+                className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="Action plan for improvement..."
+                value={studentBehaviourForm.action_plan}
+                onChange={(e) => setStudentBehaviourForm({ ...studentBehaviourForm, action_plan: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="behaviour_remarks">Remarks</Label>
+              <textarea
+                id="behaviour_remarks"
+                className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="Additional remarks about behaviour..."
+                value={studentBehaviourForm.remarks}
+                onChange={(e) => setStudentBehaviourForm({ ...studentBehaviourForm, remarks: e.target.value })}
+              />
+            </div>
+            <div className="flex justify-end gap-3 pt-4">
+              <Button variant="outline" onClick={() => setStudentBehaviourDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveStudentBehaviour}>
+                {editingStudentBehaviour ? 'Update Record' : 'Add Record'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Student Career Dialog */}
+      <Dialog open={studentCareerDialogOpen} onOpenChange={setStudentCareerDialogOpen}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <DialogTitle>
+                  {editingStudentCareer ? 'Edit Career Record' : 'Add Career Record'}
+                </DialogTitle>
+                <p className="text-sm text-gray-500 mt-1">
+                  {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setStudentCareerDialogOpen(false)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="career_status">Career Status *</Label>
+                <Select
+                  value={studentCareerForm.career_status}
+                  onValueChange={(value) => setStudentCareerForm({ ...studentCareerForm, career_status: value })}
+                >
+                  <SelectTrigger id="career_status">
+                    <SelectValue placeholder="Select status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="placed">Placed</SelectItem>
+                    <SelectItem value="seeking">Seeking Opportunities</SelectItem>
+                    <SelectItem value="higher_studies">Pursuing Higher Studies</SelectItem>
+                    <SelectItem value="entrepreneur">Entrepreneur</SelectItem>
+                    <SelectItem value="not_placed">Not Placed</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="company_name">Company Name</Label>
+                <Input
+                  id="company_name"
+                  value={studentCareerForm.company_name}
+                  onChange={(e) => setStudentCareerForm({ ...studentCareerForm, company_name: e.target.value })}
+                  placeholder="Company name if placed"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="job_role">Job Role</Label>
+                <Input
+                  id="job_role"
+                  value={studentCareerForm.job_role}
+                  onChange={(e) => setStudentCareerForm({ ...studentCareerForm, job_role: e.target.value })}
+                  placeholder="Job role/designation"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="placement_date">Placement Date</Label>
+                <Input
+                  id="placement_date"
+                  type="date"
+                  value={studentCareerForm.placement_date}
+                  onChange={(e) => setStudentCareerForm({ ...studentCareerForm, placement_date: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="salary_package">Salary Package</Label>
+                <Input
+                  id="salary_package"
+                  value={studentCareerForm.salary_package}
+                  onChange={(e) => setStudentCareerForm({ ...studentCareerForm, salary_package: e.target.value })}
+                  placeholder="e.g., 6 LPA"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="resume_status">Resume Status</Label>
+                <Input
+                  id="resume_status"
+                  value={studentCareerForm.resume_status}
+                  onChange={(e) => setStudentCareerForm({ ...studentCareerForm, resume_status: e.target.value })}
+                  placeholder="Resume preparation status"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="skills_for_career">Skills for Career</Label>
+              <textarea
+                id="skills_for_career"
+                className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="Skills relevant for career..."
+                value={studentCareerForm.skills_for_career}
+                onChange={(e) => setStudentCareerForm({ ...studentCareerForm, skills_for_career: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="career_goals">Career Goals</Label>
+              <textarea
+                id="career_goals"
+                className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="Student career goals..."
+                value={studentCareerForm.career_goals}
+                onChange={(e) => setStudentCareerForm({ ...studentCareerForm, career_goals: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="guidance_provided">Guidance Provided</Label>
+              <textarea
+                id="guidance_provided"
+                className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="Career guidance provided by mentor..."
+                value={studentCareerForm.guidance_provided}
+                onChange={(e) => setStudentCareerForm({ ...studentCareerForm, guidance_provided: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="interview_preparation">Interview Preparation</Label>
+              <textarea
+                id="interview_preparation"
+                className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="Interview preparation notes..."
+                value={studentCareerForm.interview_preparation}
+                onChange={(e) => setStudentCareerForm({ ...studentCareerForm, interview_preparation: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="career_remarks">Remarks</Label>
+              <textarea
+                id="career_remarks"
+                className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="Additional remarks about career..."
+                value={studentCareerForm.remarks}
+                onChange={(e) => setStudentCareerForm({ ...studentCareerForm, remarks: e.target.value })}
+              />
+            </div>
+            <div className="flex justify-end gap-3 pt-4">
+              <Button variant="outline" onClick={() => setStudentCareerDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveStudentCareer}>
+                {editingStudentCareer ? 'Update Record' : 'Add Record'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Student Link Dialog */}
+      <Dialog open={studentLinkDialogOpen} onOpenChange={setStudentLinkDialogOpen}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <DialogTitle>
+                  {editingStudentLink ? 'Edit Link Record' : 'Add Link Record'}
+                </DialogTitle>
+                <p className="text-sm text-gray-500 mt-1">
+                  {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setStudentLinkDialogOpen(false)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="link_title">Link Title *</Label>
+                <Input
+                  id="link_title"
+                  value={studentLinkForm.link_title}
+                  onChange={(e) => setStudentLinkForm({ ...studentLinkForm, link_title: e.target.value })}
+                  placeholder="Title of the link/resource"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="link_category">Link Category *</Label>
+                <Select
+                  value={studentLinkForm.link_category}
+                  onValueChange={(value) => setStudentLinkForm({ ...studentLinkForm, link_category: value })}
+                >
+                  <SelectTrigger id="link_category">
+                    <SelectValue placeholder="Select category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="academic">Academic Resources</SelectItem>
+                    <SelectItem value="career">Career Resources</SelectItem>
+                    <SelectItem value="skill_development">Skill Development</SelectItem>
+                    <SelectItem value="certification">Certification Resources</SelectItem>
+                    <SelectItem value="placement">Placement Resources</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="link_url">Link URL *</Label>
+              <Input
+                id="link_url"
+                value={studentLinkForm.link_url}
+                onChange={(e) => setStudentLinkForm({ ...studentLinkForm, link_url: e.target.value })}
+                placeholder="https://example.com/resource"
+              />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="importance">Importance</Label>
+                <Input
+                  id="importance"
+                  value={studentLinkForm.importance}
+                  onChange={(e) => setStudentLinkForm({ ...studentLinkForm, importance: e.target.value })}
+                  placeholder="e.g., High, Medium, Low"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="status">Status *</Label>
+                <Select
+                  value={studentLinkForm.status}
+                  onValueChange={(value) => setStudentLinkForm({ ...studentLinkForm, status: value })}
+                >
+                  <SelectTrigger id="status">
+                    <SelectValue placeholder="Select status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="pending">Pending</SelectItem>
+                    <SelectItem value="in_progress">In Progress</SelectItem>
+                    <SelectItem value="completed">Completed</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="description">Description</Label>
+              <textarea
+                id="description"
+                className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="Description of the resource..."
+                value={studentLinkForm.description}
+                onChange={(e) => setStudentLinkForm({ ...studentLinkForm, description: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="link_remarks">Remarks</Label>
+              <textarea
+                id="link_remarks"
+                className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="Additional remarks about the link..."
+                value={studentLinkForm.remarks}
+                onChange={(e) => setStudentLinkForm({ ...studentLinkForm, remarks: e.target.value })}
+              />
+            </div>
+            <div className="flex justify-end gap-3 pt-4">
+              <Button variant="outline" onClick={() => setStudentLinkDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveStudentLink}>
+                {editingStudentLink ? 'Update Record' : 'Add Record'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Student Training Dialog */}
+      <Dialog open={studentTrainingDialogOpen} onOpenChange={setStudentTrainingDialogOpen}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <DialogTitle>
+                  {editingStudentTraining ? 'Edit Training Record' : 'Add Training Record'}
+                </DialogTitle>
+                <p className="text-sm text-gray-500 mt-1">
+                  {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setStudentTrainingDialogOpen(false)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="training_name">Training Name *</Label>
+                <Input
+                  id="training_name"
+                  value={studentTrainingForm.training_name}
+                  onChange={(e) => setStudentTrainingForm({ ...studentTrainingForm, training_name: e.target.value })}
+                  placeholder="Name of the training program"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="training_type">Training Type *</Label>
+                <Select
+                  value={studentTrainingForm.training_type}
+                  onValueChange={(value) => setStudentTrainingForm({ ...studentTrainingForm, training_type: value })}
+                >
+                  <SelectTrigger id="training_type">
+                    <SelectValue placeholder="Select type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="technical">Technical Training</SelectItem>
+                    <SelectItem value="soft_skills">Soft Skills Training</SelectItem>
+                    <SelectItem value="industry">Industry Training</SelectItem>
+                    <SelectItem value="certification">Certification Program</SelectItem>
+                    <SelectItem value="workshop">Workshop</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="organization">Organization</Label>
+                <Input
+                  id="organization"
+                  value={studentTrainingForm.organization}
+                  onChange={(e) => setStudentTrainingForm({ ...studentTrainingForm, organization: e.target.value })}
+                  placeholder="Organization providing training"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="duration_hours">Duration (Hours)</Label>
+                <Input
+                  id="duration_hours"
+                  type="number"
+                  value={studentTrainingForm.duration_hours}
+                  onChange={(e) => setStudentTrainingForm({ ...studentTrainingForm, duration_hours: e.target.value })}
+                  placeholder="Duration in hours"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="start_date">Start Date *</Label>
+                <Input
+                  id="start_date"
+                  type="date"
+                  value={studentTrainingForm.start_date}
+                  onChange={(e) => setStudentTrainingForm({ ...studentTrainingForm, start_date: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="end_date">End Date *</Label>
+                <Input
+                  id="end_date"
+                  type="date"
+                  value={studentTrainingForm.end_date}
+                  onChange={(e) => setStudentTrainingForm({ ...studentTrainingForm, end_date: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="skills_learned">Skills Learned</Label>
+              <textarea
+                id="skills_learned"
+                className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="Skills learned during training..."
+                value={studentTrainingForm.skills_learned}
+                onChange={(e) => setStudentTrainingForm({ ...studentTrainingForm, skills_learned: e.target.value })}
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="certification_obtained"
+                checked={studentTrainingForm.certification_obtained}
+                onChange={(e) => setStudentTrainingForm({ ...studentTrainingForm, certification_obtained: e.target.checked })}
+                className="w-4 h-4"
+              />
+              <Label htmlFor="certification_obtained">Certification Obtained</Label>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="certificate_name">Certificate Name</Label>
+              <Input
+                id="certificate_name"
+                value={studentTrainingForm.certificate_name}
+                onChange={(e) => setStudentTrainingForm({ ...studentTrainingForm, certificate_name: e.target.value })}
+                placeholder="Name of certificate obtained"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="training_remarks">Remarks</Label>
+              <textarea
+                id="training_remarks"
+                className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="Additional remarks about the training..."
+                value={studentTrainingForm.remarks}
+                onChange={(e) => setStudentTrainingForm({ ...studentTrainingForm, remarks: e.target.value })}
+              />
+            </div>
+            <div className="flex justify-end gap-3 pt-4">
+              <Button variant="outline" onClick={() => setStudentTrainingDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveStudentTraining}>
+                {editingStudentTraining ? 'Update Record' : 'Add Record'}
               </Button>
             </div>
           </div>

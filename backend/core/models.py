@@ -328,3 +328,145 @@ class CounsellingNote(models.Model):
 
     def __str__(self):
         return f"{self.mentor.full_name or self.mentor.username} - {self.student.full_name or self.student.username} - {self.counselling_date}"
+
+
+class StudentBehaviour(models.Model):
+    """Model to store student behaviour assessments for mentor dashboard."""
+    BEHAVIOUR_CATEGORY_CHOICES = (
+        ('discipline', 'Discipline'),
+        ('participation', 'Class Participation'),
+        ('teamwork', 'Teamwork'),
+        ('leadership', 'Leadership'),
+        ('communication', 'Communication'),
+        ('time_management', 'Time Management'),
+        ('other', 'Other'),
+    )
+    RATING_CHOICES = (
+        (1, 'Poor'),
+        (2, 'Below Average'),
+        (3, 'Average'),
+        (4, 'Good'),
+        (5, 'Excellent'),
+    )
+    
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='behaviour_records')
+    mentor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='student_behaviours', null=True, blank=True)
+    behaviour_category = models.CharField(max_length=50, choices=BEHAVIOUR_CATEGORY_CHOICES, help_text='Category of behaviour')
+    rating = models.IntegerField(choices=RATING_CHOICES, help_text='Rating (1-5)')
+    assessment_date = models.DateField(help_text='Date of assessment')
+    positive_aspects = models.TextField(blank=True, null=True, help_text='Positive aspects observed')
+    areas_for_improvement = models.TextField(blank=True, null=True, help_text='Areas needing improvement')
+    action_plan = models.TextField(blank=True, null=True, help_text='Action plan for improvement')
+    remarks = models.TextField(blank=True, null=True, help_text='Additional remarks about behaviour')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Student Behaviour'
+        verbose_name_plural = 'Student Behaviours'
+        ordering = ['-assessment_date', '-created_at']
+
+    def __str__(self):
+        return f"{self.student.full_name or self.student.username} - {self.behaviour_category} ({self.rating}/5)"
+
+
+class StudentCareer(models.Model):
+    """Model to store student career information for mentor dashboard."""
+    CAREER_STATUS_CHOICES = (
+        ('placed', 'Placed'),
+        ('seeking', 'Seeking Opportunities'),
+        ('higher_studies', 'Pursuing Higher Studies'),
+        ('entrepreneur', 'Entrepreneur'),
+        ('not_placed', 'Not Placed'),
+    )
+    
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='career_records')
+    mentor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='student_careers', null=True, blank=True)
+    career_status = models.CharField(max_length=50, choices=CAREER_STATUS_CHOICES, help_text='Current career status')
+    company_name = models.CharField(max_length=200, blank=True, null=True, help_text='Company name if placed')
+    job_role = models.CharField(max_length=200, blank=True, null=True, help_text='Job role/designation')
+    placement_date = models.DateField(blank=True, null=True, help_text='Date of placement')
+    salary_package = models.CharField(max_length=100, blank=True, null=True, help_text='Salary package (e.g., 6 LPA)')
+    skills_for_career = models.TextField(blank=True, null=True, help_text='Skills relevant for career')
+    career_goals = models.TextField(blank=True, null=True, help_text='Student career goals')
+    guidance_provided = models.TextField(blank=True, null=True, help_text='Career guidance provided by mentor')
+    resume_status = models.CharField(max_length=50, blank=True, null=True, help_text='Resume preparation status')
+    interview_preparation = models.TextField(blank=True, null=True, help_text='Interview preparation notes')
+    remarks = models.TextField(blank=True, null=True, help_text='Additional remarks about career')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Student Career'
+        verbose_name_plural = 'Student Careers'
+        ordering = ['-placement_date', '-created_at']
+
+    def __str__(self):
+        return f"{self.student.full_name or self.student.username} - {self.career_status}"
+
+
+class StudentLink(models.Model):
+    """Model to store student links/resources for mentor dashboard."""
+    LINK_CATEGORY_CHOICES = (
+        ('academic', 'Academic Resources'),
+        ('career', 'Career Resources'),
+        ('skill_development', 'Skill Development'),
+        ('certification', 'Certification Resources'),
+        ('placement', 'Placement Resources'),
+        ('other', 'Other'),
+    )
+    
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='student_links')
+    mentor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='shared_links', null=True, blank=True)
+    link_title = models.CharField(max_length=200, help_text='Title of the link/resource')
+    link_url = models.URLField(help_text='URL of the resource')
+    link_category = models.CharField(max_length=50, choices=LINK_CATEGORY_CHOICES, help_text='Category of the link')
+    description = models.TextField(blank=True, null=True, help_text='Description of the resource')
+    importance = models.CharField(max_length=50, blank=True, null=True, help_text='Importance level (e.g., High, Medium, Low)')
+    status = models.CharField(max_length=50, default='pending', help_text='Status (e.g., pending, completed, in_progress)')
+    remarks = models.TextField(blank=True, null=True, help_text='Additional remarks about the link')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Student Link'
+        verbose_name_plural = 'Student Links'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.student.full_name or self.student.username} - {self.link_title}"
+
+
+class StudentTraining(models.Model):
+    """Model to store student training information for mentor dashboard."""
+    TRAINING_TYPE_CHOICES = (
+        ('technical', 'Technical Training'),
+        ('soft_skills', 'Soft Skills Training'),
+        ('industry', 'Industry Training'),
+        ('certification', 'Certification Program'),
+        ('workshop', 'Workshop'),
+        ('other', 'Other'),
+    )
+    
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='training_records')
+    mentor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='student_trainings', null=True, blank=True)
+    training_name = models.CharField(max_length=200, help_text='Name of the training program')
+    training_type = models.CharField(max_length=50, choices=TRAINING_TYPE_CHOICES, help_text='Type of training')
+    organization = models.CharField(max_length=200, blank=True, null=True, help_text='Organization providing training')
+    start_date = models.DateField(help_text='Start date of training')
+    end_date = models.DateField(help_text='End date of training')
+    duration_hours = models.IntegerField(blank=True, null=True, help_text='Duration in hours')
+    skills_learned = models.TextField(blank=True, null=True, help_text='Skills learned during training')
+    certification_obtained = models.BooleanField(default=False, help_text='Whether certification was obtained')
+    certificate_name = models.CharField(max_length=200, blank=True, null=True, help_text='Name of certificate obtained')
+    remarks = models.TextField(blank=True, null=True, help_text='Additional remarks about the training')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Student Training'
+        verbose_name_plural = 'Student Trainings'
+        ordering = ['-start_date', '-created_at']
+
+    def __str__(self):
+        return f"{self.student.full_name or self.student.username} - {self.training_name}"

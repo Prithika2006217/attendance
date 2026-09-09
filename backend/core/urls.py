@@ -38,6 +38,15 @@ from .views import (
     mentor_attendance_record_detail_view,
     counselling_notes_view,
     counselling_note_detail_view,
+    students_list_view,
+    student_behaviour_records_view,
+    student_behaviour_record_detail_view,
+    student_career_records_view,
+    student_career_record_detail_view,
+    student_link_records_view,
+    student_link_record_detail_view,
+    student_training_records_view,
+    student_training_record_detail_view,
 )
 
 urlpatterns = [
@@ -49,6 +58,8 @@ urlpatterns = [
     path('attendance-portal-freeze/', attendance_portal_freeze_view),
     path('users/', user_list_view),
     path('users/<int:pk>/', user_detail_view),
+    path('students/', students_list_view),
+    path('students/', students_list_view),
     path('departments/', department_list_view),
     path('departments/<int:pk>/', department_detail_view),
     path('sections/', section_list_view),
@@ -81,4 +92,12 @@ urlpatterns = [
     path('students/<int:student_id>/mentor-attendance/<int:record_id>/', mentor_attendance_record_detail_view),
     path('students/<int:student_id>/counselling-notes/', counselling_notes_view),
     path('students/<int:student_id>/counselling-notes/<int:note_id>/', counselling_note_detail_view),
+    path('students/<int:student_id>/behaviour-records/', student_behaviour_records_view),
+    path('students/<int:student_id>/behaviour-records/<int:record_id>/', student_behaviour_record_detail_view),
+    path('students/<int:student_id>/career-records/', student_career_records_view),
+    path('students/<int:student_id>/career-records/<int:record_id>/', student_career_record_detail_view),
+    path('students/<int:student_id>/link-records/', student_link_records_view),
+    path('students/<int:student_id>/link-records/<int:record_id>/', student_link_record_detail_view),
+    path('students/<int:student_id>/training-records/', student_training_records_view),
+    path('students/<int:student_id>/training-records/<int:record_id>/', student_training_record_detail_view),
 ]
