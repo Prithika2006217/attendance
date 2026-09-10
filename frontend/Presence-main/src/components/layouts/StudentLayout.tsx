@@ -43,7 +43,8 @@ import {
   Award,
   Plus,
   Trash2,
-  FileText
+  FileText,
+  Briefcase
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { db } from '@/lib/mockDb';
@@ -213,6 +214,34 @@ export const StudentLayout: React.FC = () => {
     updated_at: string;
   }[]>([]);
   const [counsellingNotesLoading, setCounsellingNotesLoading] = useState(false);
+
+  // Career state
+  const [careerInfo, setCareerInfo] = useState<{
+    id: number | null;
+    career_goal: string;
+    expected_package: string;
+    desired_role: string;
+    dream_company: string;
+    help_needed: string;
+    faculty_suggestions: string;
+  }>({
+    id: null,
+    career_goal: '',
+    expected_package: '',
+    desired_role: '',
+    dream_company: '',
+    help_needed: '',
+    faculty_suggestions: ''
+  });
+  const [careerLoading, setCareerLoading] = useState(false);
+  const [careerEditOpen, setCareerEditOpen] = useState(false);
+  const [careerForm, setCareerForm] = useState({
+    career_goal: '',
+    expected_package: '',
+    desired_role: '',
+    dream_company: '',
+    help_needed: ''
+  });
 
   /** QR Attendance state for students */
   const [qrScanningOpen, setQrScanningOpen] = useState(false);
@@ -545,8 +574,114 @@ export const StudentLayout: React.FC = () => {
     if (activeTab === 'achievements') {
       loadMentorRemarks();
       loadCounsellingNotes();
+      loadCareerInfo();
     }
   }, [activeTab, numericId]);
+
+  const loadCareerInfo = async () => {
+    if (numericId == null) return;
+    setCareerLoading(true);
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${numericId}/career/`));
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          const careerRecord = data[0];
+          setCareerInfo({
+            id: careerRecord.id,
+            career_goal: careerRecord.career_goal || '',
+            expected_package: careerRecord.expected_package || '',
+            desired_role: careerRecord.desired_role || '',
+            dream_company: careerRecord.dream_company || '',
+            help_needed: careerRecord.help_needed || '',
+            faculty_suggestions: careerRecord.faculty_suggestions || ''
+          });
+        } else {
+          setCareerInfo({
+            id: null,
+            career_goal: '',
+            expected_package: '',
+            desired_role: '',
+            dream_company: '',
+            help_needed: '',
+            faculty_suggestions: ''
+          });
+        }
+      } else {
+        setCareerInfo({
+          id: null,
+          career_goal: '',
+          expected_package: '',
+          desired_role: '',
+          dream_company: '',
+          help_needed: '',
+          faculty_suggestions: ''
+        });
+      }
+    } catch (error) {
+      setCareerInfo({
+        id: null,
+        career_goal: '',
+        expected_package: '',
+        desired_role: '',
+        dream_company: '',
+        help_needed: '',
+        faculty_suggestions: ''
+      });
+    } finally {
+      setCareerLoading(false);
+    }
+  };
+
+  const handleOpenCareerDialog = () => {
+    setCareerForm({
+      career_goal: careerInfo.career_goal,
+      expected_package: careerInfo.expected_package,
+      desired_role: careerInfo.desired_role,
+      dream_company: careerInfo.dream_company,
+      help_needed: careerInfo.help_needed
+    });
+    setCareerEditOpen(true);
+  };
+
+  const handleSaveCareer = async () => {
+    if (numericId == null) return;
+    try {
+      const url = careerInfo.id
+        ? apiUrl(`/api/students/${numericId}/career/${careerInfo.id}/`)
+        : apiUrl(`/api/students/${numericId}/career/`);
+      
+      const method = careerInfo.id ? 'PUT' : 'POST';
+      
+      const res = await authFetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(careerForm)
+      });
+
+      if (res.ok) {
+        setCareerEditOpen(false);
+        loadCareerInfo();
+        toast({
+          title: 'Career information saved',
+          description: 'Your career information has been saved successfully.'
+        });
+      } else {
+        const errorData = await res.json();
+        toast({
+          title: 'Error saving career information',
+          description: errorData.detail || 'Failed to save career information.',
+          variant: 'destructive'
+        });
+      }
+    } catch (error) {
+      toast({
+        title: 'Error saving career information',
+        description: 'An error occurred while saving career information.',
+        variant: 'destructive'
+      });
+    }
+  };
 
   const handleOpenAchievementDialog = (achievement = null) => {
     if (achievement) {
@@ -1061,7 +1196,7 @@ export const StudentLayout: React.FC = () => {
             <TabsTrigger value="subjects">Subjects</TabsTrigger>
             <TabsTrigger value="student-details">Student Details</TabsTrigger>
             <TabsTrigger value="educational-profile">Educational Profile</TabsTrigger>
-            <TabsTrigger value="achievements">Achievements</TabsTrigger>
+            <TabsTrigger value="achievements">Records</TabsTrigger>
             <TabsTrigger value="profile">Profile</TabsTrigger>
           </TabsList>
           {isStudentAttendanceFrozen && (
@@ -1616,13 +1751,13 @@ export const StudentLayout: React.FC = () => {
             </Card>
           </TabsContent>
 
-          {/* Achievements Tab */}
+          {/* Records Tab */}
           <TabsContent value="achievements" className="space-y-6 mt-6">
             <Card>
               <CardHeader className="flex flex-row items-center justify-between">
                 <div>
-                  <CardTitle>My Achievements</CardTitle>
-                  <CardDescription>Extra-curricular and co-curricular activities, representations, and achievements</CardDescription>
+                  <CardTitle>My Records</CardTitle>
+                  <CardDescription>Extra-curricular and co-curricular activities, representations, achievements, and career information</CardDescription>
                 </div>
                 <Button variant="outline" size="sm" onClick={() => handleOpenAchievementDialog(null)}>
                   <Plus className="w-4 h-4 mr-2" />
@@ -1784,6 +1919,132 @@ export const StudentLayout: React.FC = () => {
                 )}
               </CardContent>
             </Card>
+
+            {/* Career Section */}
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div>
+                  <CardTitle>Career Information</CardTitle>
+                  <CardDescription>Your career goals and aspirations</CardDescription>
+                </div>
+                <Button variant="outline" size="sm" onClick={handleOpenCareerDialog}>
+                  <Edit className="w-4 h-4 mr-2" />
+                  Edit Career
+                </Button>
+              </CardHeader>
+              <CardContent>
+                {careerLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading career information...</p>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-sm font-medium text-muted-foreground">What do you want to become?</label>
+                        <p className="text-lg font-medium">{careerInfo.career_goal || '–'}</p>
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium text-muted-foreground">Expected Package</label>
+                        <p className="text-lg font-medium">{careerInfo.expected_package ? `${careerInfo.expected_package} LPA` : '–'}</p>
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium text-muted-foreground">Desired Role</label>
+                        <p className="text-lg font-medium">{careerInfo.desired_role || '–'}</p>
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium text-muted-foreground">Dream Company</label>
+                        <p className="text-lg font-medium">{careerInfo.dream_company || '–'}</p>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium text-muted-foreground">Need any help?</label>
+                      <p className="text-base whitespace-pre-wrap">{careerInfo.help_needed || '–'}</p>
+                    </div>
+                    {careerInfo.faculty_suggestions && (
+                      <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                        <label className="text-sm font-medium text-blue-700 dark:text-blue-300">Suggestions from Faculty</label>
+                        <p className="text-base whitespace-pre-wrap mt-1">{careerInfo.faculty_suggestions}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Career Edit Dialog */}
+            <Dialog open={careerEditOpen} onOpenChange={setCareerEditOpen}>
+              <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>Edit Career Information</DialogTitle>
+                  <DialogDescription>Update your career goals and aspirations</DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="career_goal">What do you want to become? *</Label>
+                    <Input
+                      id="career_goal"
+                      value={careerForm.career_goal}
+                      onChange={(e) => setCareerForm({ ...careerForm, career_goal: e.target.value })}
+                      placeholder="e.g., Software Engineer, Data Scientist, etc."
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="expected_package">Expected Package *</Label>
+                    <Select
+                      value={careerForm.expected_package}
+                      onValueChange={(value) => setCareerForm({ ...careerForm, expected_package: value })}
+                    >
+                      <SelectTrigger id="expected_package">
+                        <SelectValue placeholder="Select expected package" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="3-6">3-6 LPA</SelectItem>
+                        <SelectItem value="6-10">6-10 LPA</SelectItem>
+                        <SelectItem value="10-15">10-15 LPA</SelectItem>
+                        <SelectItem value="15-20">15-20 LPA</SelectItem>
+                        <SelectItem value="20-25">20-25 LPA</SelectItem>
+                        <SelectItem value="25+">25+ LPA</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="desired_role">Which role do you want to do? *</Label>
+                    <Input
+                      id="desired_role"
+                      value={careerForm.desired_role}
+                      onChange={(e) => setCareerForm({ ...careerForm, desired_role: e.target.value })}
+                      placeholder="e.g., Frontend Developer, Backend Developer, etc."
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="dream_company">Dream company to work?</Label>
+                    <Input
+                      id="dream_company"
+                      value={careerForm.dream_company}
+                      onChange={(e) => setCareerForm({ ...careerForm, dream_company: e.target.value })}
+                      placeholder="e.g., Google, Microsoft, Amazon, etc."
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="help_needed">Need any help?</Label>
+                    <textarea
+                      id="help_needed"
+                      className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                      value={careerForm.help_needed}
+                      onChange={(e) => setCareerForm({ ...careerForm, help_needed: e.target.value })}
+                      placeholder="Describe any help or guidance you need..."
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setCareerEditOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button onClick={handleSaveCareer}>
+                    Save Career Information
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
 
             {/* Achievement Dialog */}
             <Dialog open={achievementDialogOpen} onOpenChange={setAchievementDialogOpen}>

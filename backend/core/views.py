@@ -3248,20 +3248,32 @@ def student_career_records_view(request, student_id):
         return Response(serializer.data)
 
     elif request.method == 'POST':
-        if not is_mentor and not is_admin:
-            return Response({"detail": "Only mentors and admins can create career records."}, status=403)
-        
-        data = request.data.copy()
-        # Remove student and mentor from request data as they're set programmatically
-        data.pop('student', None)
-        data.pop('mentor', None)
-        
-        serializer = StudentCareerSerializer(data=data)
-        if serializer.is_valid():
-            # Save with the student and mentor set programmatically
-            serializer.save(student=student, mentor=request.user)
-            return Response(serializer.data, status=201)
-        return Response(serializer.errors, status=400)
+        if is_student:
+            # Students can create their own career records
+            data = request.data.copy()
+            data.pop('student', None)
+            data.pop('mentor', None)
+            
+            serializer = StudentCareerSerializer(data=data)
+            if serializer.is_valid():
+                serializer.save(student=student, mentor=None)
+                return Response(serializer.data, status=201)
+            return Response(serializer.errors, status=400)
+        elif is_mentor or is_admin:
+            # Mentors and admins can create career records for students
+            data = request.data.copy()
+            # Remove student and mentor from request data as they're set programmatically
+            data.pop('student', None)
+            data.pop('mentor', None)
+            
+            serializer = StudentCareerSerializer(data=data)
+            if serializer.is_valid():
+                # Save with the student and mentor set programmatically
+                serializer.save(student=student, mentor=request.user)
+                return Response(serializer.data, status=201)
+            return Response(serializer.errors, status=400)
+        else:
+            return Response({"detail": "Not authorized to create career records."}, status=403)
 
 
 @api_view(['GET', 'PUT', 'DELETE'])
@@ -3303,23 +3315,39 @@ def student_career_record_detail_view(request, student_id, record_id):
         return Response(serializer.data)
 
     elif request.method == 'PUT':
-        if not is_mentor and not is_admin:
-            return Response({"detail": "Only mentors and admins can update career records."}, status=403)
-        
-        # Only the original mentor or admin can update
-        if is_mentor and record.mentor != request.user:
-            return Response({"detail": "You can only update your own career records."}, status=403)
-        
-        data = request.data.copy()
-        # Remove student and mentor from request data as they shouldn't be changed
-        data.pop('student', None)
-        data.pop('mentor', None)
-        
-        serializer = StudentCareerSerializer(record, data=data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=400)
+        if is_student:
+            # Students can update their own career records (but not faculty_suggestions)
+            data = request.data.copy()
+            # Remove fields that students shouldn't update
+            data.pop('faculty_suggestions', None)
+            data.pop('student', None)
+            data.pop('mentor', None)
+            
+            serializer = StudentCareerSerializer(record, data=data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data)
+            return Response(serializer.errors, status=400)
+        elif is_mentor or is_admin:
+            # Mentors and admins can update career records, including faculty_suggestions
+            # Mentors can update records for their assigned students
+            if is_mentor:
+                # Check if mentor is assigned to this student
+                if not MentorStudentAssignment.objects.filter(mentor=request.user, student=student).exists():
+                    return Response({"detail": "You are not assigned to this student."}, status=403)
+            
+            data = request.data.copy()
+            # Remove student and mentor from request data as they shouldn't be changed
+            data.pop('student', None)
+            data.pop('mentor', None)
+            
+            serializer = StudentCareerSerializer(record, data=data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data)
+            return Response(serializer.errors, status=400)
+        else:
+            return Response({"detail": "Not authorized to update career records."}, status=403)
 
     elif request.method == 'DELETE':
         if not is_mentor and not is_admin:
@@ -3331,6 +3359,105 @@ def student_career_record_detail_view(request, student_id, record_id):
         
         record.delete()
         return Response(status=204)
+
+
+@api_view(['GET', 'POST', 'PUT'])
+@permission_classes([IsAuthenticated])
+def student_career_info_view(request, student_id):
+    """Simplified career info endpoint for students to manage their own career information."""
+    is_student = request.user.role == 'student'
+    is_mentor = request.user.role == 'mentor'
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+
+    if not is_student and not is_mentor and not is_admin:
+        return Response({"detail": "Not authorized."}, status=403)
+
+    # Verify access permissions
+    if is_student:
+        if request.user.id != student_id:
+            return Response({"detail": "Students can only view their own career information."}, status=403)
+        student = request.user
+    elif is_mentor:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+            if not MentorStudentAssignment.objects.filter(mentor=request.user, student=student).exists():
+                return Response({"detail": "You are not assigned to this student."}, status=403)
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+    else:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+
+    if request.method == 'GET':
+        # Get the first career record for the student (or create empty response)
+        records = StudentCareer.objects.filter(student=student).order_by('-created_at')
+        if records.exists():
+            serializer = StudentCareerSerializer(records.first())
+            return Response(serializer.data)
+        else:
+            # Return empty career info structure
+            return Response({
+                'id': None,
+                'career_goal': '',
+                'expected_package': '',
+                'desired_role': '',
+                'dream_company': '',
+                'help_needed': '',
+                'faculty_suggestions': ''
+            })
+
+    elif request.method == 'POST':
+        if not is_student:
+            return Response({"detail": "Only students can create their own career information."}, status=403)
+        
+        data = request.data.copy()
+        data.pop('student', None)
+        data.pop('mentor', None)
+        
+        serializer = StudentCareerSerializer(data=data)
+        if serializer.is_valid():
+            serializer.save(student=student, mentor=None)
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+    elif request.method == 'PUT':
+        if is_student:
+            # Students can update their own career information (but not faculty_suggestions)
+            records = StudentCareer.objects.filter(student=student)
+            if not records.exists():
+                return Response({"detail": "No career information found. Create one first."}, status=404)
+            
+            record = records.first()
+            data = request.data.copy()
+            data.pop('faculty_suggestions', None)
+            data.pop('student', None)
+            data.pop('mentor', None)
+            
+            serializer = StudentCareerSerializer(record, data=data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data)
+            return Response(serializer.errors, status=400)
+        elif is_mentor or is_admin:
+            # Mentors can update faculty_suggestions for their assigned students
+            records = StudentCareer.objects.filter(student=student)
+            if not records.exists():
+                return Response({"detail": "No career information found. Create one first."}, status=404)
+            
+            record = records.first()
+            data = request.data.copy()
+            data.pop('student', None)
+            data.pop('mentor', None)
+            
+            serializer = StudentCareerSerializer(record, data=data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data)
+            return Response(serializer.errors, status=400)
+        else:
+            return Response({"detail": "Not authorized to update career information."}, status=403)
 
 
 @api_view(['GET', 'POST'])

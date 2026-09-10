@@ -414,6 +414,15 @@ class StudentCareer(models.Model):
         ('not_placed', 'Not Placed'),
     )
     
+    EXPECTED_PACKAGE_CHOICES = (
+        ('3-6', '3-6 LPA'),
+        ('6-10', '6-10 LPA'),
+        ('10-15', '10-15 LPA'),
+        ('15-20', '15-20 LPA'),
+        ('20-25', '20-25 LPA'),
+        ('25+', '25+ LPA'),
+    )
+    
     student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='career_records')
     mentor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='student_careers', null=True, blank=True)
     career_status = models.CharField(max_length=50, choices=CAREER_STATUS_CHOICES, help_text='Current career status')
@@ -427,6 +436,13 @@ class StudentCareer(models.Model):
     resume_status = models.CharField(max_length=50, blank=True, null=True, help_text='Resume preparation status')
     interview_preparation = models.TextField(blank=True, null=True, help_text='Interview preparation notes')
     remarks = models.TextField(blank=True, null=True, help_text='Additional remarks about career')
+    # New fields for student career planning
+    career_goal = models.CharField(max_length=200, blank=True, null=True, help_text='What do you want to become?')
+    expected_package = models.CharField(max_length=20, choices=EXPECTED_PACKAGE_CHOICES, blank=True, null=True, help_text='Expected salary package')
+    desired_role = models.CharField(max_length=200, blank=True, null=True, help_text='Which role do you want to do?')
+    dream_company = models.CharField(max_length=200, blank=True, null=True, help_text='Dream company to work?')
+    help_needed = models.TextField(blank=True, null=True, help_text='Need any help?')
+    faculty_suggestions = models.TextField(blank=True, null=True, help_text='Suggestions from faculty')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

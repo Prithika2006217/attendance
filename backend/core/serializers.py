@@ -573,6 +573,8 @@ class StudentCareerSerializer(serializers.ModelSerializer):
             'job_role', 'placement_date', 'salary_package',
             'skills_for_career', 'career_goals', 'guidance_provided',
             'resume_status', 'interview_preparation', 'remarks',
+            'career_goal', 'expected_package', 'desired_role',
+            'dream_company', 'help_needed', 'faculty_suggestions',
             'created_at', 'updated_at'
         )
         read_only_fields = ('id', 'created_at', 'updated_at', 'student', 'mentor')

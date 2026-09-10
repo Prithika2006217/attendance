@@ -218,6 +218,12 @@ type StudentCareer = {
   resume_status: string | null;
   interview_preparation: string | null;
   remarks: string | null;
+  career_goal: string | null;
+  expected_package: string | null;
+  desired_role: string | null;
+  dream_company: string | null;
+  help_needed: string | null;
+  faculty_suggestions: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -358,7 +364,13 @@ export const MentorLayout: React.FC = () => {
     guidance_provided: '',
     resume_status: '',
     interview_preparation: '',
-    remarks: ''
+    remarks: '',
+    career_goal: '',
+    expected_package: '',
+    desired_role: '',
+    dream_company: '',
+    help_needed: '',
+    faculty_suggestions: ''
   });
   const [studentLinkRecords, setStudentLinkRecords] = useState<StudentLink[]>([]);
   const [studentLinkLoading, setStudentLinkLoading] = useState(false);
@@ -865,6 +877,27 @@ export const MentorLayout: React.FC = () => {
     }
   };
 
+  const loadStudentCareerInfo = async (studentId: number) => {
+    setStudentCareerLoading(true);
+    try {
+      const res = await authFetch(apiUrl(`/api/students/${studentId}/career/`));
+      if (res.ok) {
+        const data = await res.json();
+        if (data.id) {
+          setStudentCareerRecords([data]);
+        } else {
+          setStudentCareerRecords([]);
+        }
+      } else {
+        setStudentCareerRecords([]);
+      }
+    } catch (error) {
+      setStudentCareerRecords([]);
+    } finally {
+      setStudentCareerLoading(false);
+    }
+  };
+
   const handleOpenStudentCareerDialog = (record = null) => {
     if (record) {
       setEditingStudentCareer(record);
@@ -879,7 +912,13 @@ export const MentorLayout: React.FC = () => {
         guidance_provided: record.guidance_provided || '',
         resume_status: record.resume_status || '',
         interview_preparation: record.interview_preparation || '',
-        remarks: record.remarks || ''
+        remarks: record.remarks || '',
+        career_goal: record.career_goal || '',
+        expected_package: record.expected_package || '',
+        desired_role: record.desired_role || '',
+        dream_company: record.dream_company || '',
+        help_needed: record.help_needed || '',
+        faculty_suggestions: record.faculty_suggestions || ''
       });
     } else {
       setEditingStudentCareer(null);
@@ -894,7 +933,13 @@ export const MentorLayout: React.FC = () => {
         guidance_provided: '',
         resume_status: '',
         interview_preparation: '',
-        remarks: ''
+        remarks: '',
+        career_goal: '',
+        expected_package: '',
+        desired_role: '',
+        dream_company: '',
+        help_needed: '',
+        faculty_suggestions: ''
       });
     }
     setStudentCareerDialogOpen(true);
@@ -903,12 +948,10 @@ export const MentorLayout: React.FC = () => {
   const handleSaveStudentCareer = async () => {
     if (selectedStudent == null) return;
     try {
-      const url = editingStudentCareer
-        ? apiUrl(`/api/students/${selectedStudent.id}/career-records/${editingStudentCareer.id}/`)
-        : apiUrl(`/api/students/${selectedStudent.id}/career-records/`);
-      
-      const method = editingStudentCareer ? 'PUT' : 'POST';
-      
+      // Use the simplified career info endpoint for student career planning
+      const url = apiUrl(`/api/students/${selectedStudent.id}/career/`);
+      const method = 'PUT';
+
       const res = await authFetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
@@ -917,10 +960,10 @@ export const MentorLayout: React.FC = () => {
 
       if (res.ok) {
         setStudentCareerDialogOpen(false);
-        loadStudentCareerRecords(selectedStudent.id);
-        toast({ 
-          title: editingStudentCareer ? 'Career record updated' : 'Career record added',
-          description: 'Your career record has been saved successfully.' 
+        loadStudentCareerInfo(selectedStudent.id);
+        toast({
+          title: 'Career information updated',
+          description: 'Career information has been saved successfully.'
         });
       } else {
         const err = await res.json().catch(() => ({}));
@@ -930,17 +973,17 @@ export const MentorLayout: React.FC = () => {
         } else if (typeof err === 'object') {
           errorMessage = Object.entries(err).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`).join('; ');
         }
-        toast({ 
-          title: 'Failed to save career record', 
-          description: errorMessage, 
-          variant: 'destructive' 
+        toast({
+          title: 'Failed to save career information',
+          description: errorMessage,
+          variant: 'destructive'
         });
       }
     } catch (error) {
-      toast({ 
-        title: 'Failed to save career record', 
-        description: 'Network error. Please try again.', 
-        variant: 'destructive' 
+      toast({
+        title: 'Failed to save career information',
+        description: 'Network error. Please try again.',
+        variant: 'destructive'
       });
     }
   };
@@ -2532,7 +2575,7 @@ export const MentorLayout: React.FC = () => {
                             className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
                             onClick={() => {
                               setSelectedStudent(student);
-                              loadStudentCareerRecords(student.id);
+                              loadStudentCareerInfo(student.id);
                             }}
                           >
                             <div className="flex items-center justify-between">
@@ -2584,9 +2627,9 @@ export const MentorLayout: React.FC = () => {
                       {selectedStudent.full_name || selectedStudent.username} - {selectedStudent.roll_number || 'N/A'}
                     </p>
                   </div>
-                  <Button onClick={() => handleOpenStudentCareerDialog()} className="bg-green-600 hover:bg-green-700">
+                  <Button onClick={() => handleOpenStudentCareerDialog(studentCareerRecords.length > 0 ? studentCareerRecords[0] : null)} className="bg-green-600 hover:bg-green-700">
                     <Plus className="w-4 h-4 mr-2" />
-                    Add Career Record
+                    {studentCareerRecords.length > 0 ? 'Edit Career Information' : 'Add Career Information'}
                   </Button>
                 </div>
 
@@ -2599,12 +2642,12 @@ export const MentorLayout: React.FC = () => {
                   </CardHeader>
                   <CardContent>
                     {studentCareerLoading ? (
-                      <div className="text-center py-8 text-gray-500">Loading career records...</div>
+                      <div className="text-center py-8 text-gray-500">Loading career information...</div>
                     ) : studentCareerRecords.length === 0 ? (
                       <div className="text-center py-12">
                         <Briefcase className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                        <p className="text-gray-500 mb-2">No career records found</p>
-                        <p className="text-sm text-gray-400">Click "Add Career Record" to start tracking career information</p>
+                        <p className="text-gray-500 mb-2">No career information found</p>
+                        <p className="text-sm text-gray-400">Click "Edit Career Information" to add career details</p>
                       </div>
                     ) : (
                       <div className="space-y-4">
@@ -2612,53 +2655,80 @@ export const MentorLayout: React.FC = () => {
                           <div key={record.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
                             <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
                               <div className="flex-1">
-                                <div className="flex items-center gap-2 mb-2">
-                                  <h3 className="font-semibold text-gray-900">{record.career_status.replace('_', ' ')}</h3>
-                                  {record.company_name && (
-                                    <Badge variant="outline">{record.company_name}</Badge>
+                                {/* Career Planning Section */}
+                                <h4 className="font-semibold text-sm mb-3">Career Planning</h4>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                                  {record.career_goal && (
+                                    <div>
+                                      <span className="text-gray-600">Career Goal:</span>
+                                      <span className="ml-1 font-medium">{record.career_goal}</span>
+                                    </div>
                                   )}
-                                  {record.job_role && (
-                                    <Badge variant="secondary">{record.job_role}</Badge>
+                                  {record.expected_package && (
+                                    <div>
+                                      <span className="text-gray-600">Expected Package:</span>
+                                      <span className="ml-1 font-medium">{record.expected_package} LPA</span>
+                                    </div>
+                                  )}
+                                  {record.desired_role && (
+                                    <div>
+                                      <span className="text-gray-600">Desired Role:</span>
+                                      <span className="ml-1 font-medium">{record.desired_role}</span>
+                                    </div>
+                                  )}
+                                  {record.dream_company && (
+                                    <div>
+                                      <span className="text-gray-600">Dream Company:</span>
+                                      <span className="ml-1 font-medium">{record.dream_company}</span>
+                                    </div>
                                   )}
                                 </div>
-                                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-                                  {record.placement_date && (
-                                    <div>
-                                      <span className="text-gray-600">Placement Date:</span>
-                                      <span className="ml-1 font-medium">{format(parseISO(record.placement_date), 'PPP')}</span>
-                                    </div>
-                                  )}
-                                  {record.salary_package && (
-                                    <div>
-                                      <span className="text-gray-600">Salary:</span>
-                                      <span className="ml-1 font-medium">{record.salary_package}</span>
-                                    </div>
-                                  )}
-                                  {record.resume_status && (
-                                    <div>
-                                      <span className="text-gray-600">Resume Status:</span>
-                                      <span className="ml-1 font-medium">{record.resume_status}</span>
-                                    </div>
-                                  )}
-                                </div>
-                                {record.skills_for_career && (
-                                  <div className="mt-2 text-sm text-gray-600">
-                                    <span className="font-medium">Skills:</span> {record.skills_for_career}
+                                {record.help_needed && (
+                                  <div className="mt-3 text-sm text-gray-600">
+                                    <span className="font-medium">Help Needed:</span> {record.help_needed}
                                   </div>
                                 )}
-                                {record.career_goals && (
-                                  <div className="mt-2 text-sm text-gray-600">
-                                    <span className="font-medium">Career Goals:</span> {record.career_goals}
+                                {record.faculty_suggestions && (
+                                  <div className="mt-3 text-sm bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded p-3">
+                                    <span className="font-medium text-blue-700 dark:text-blue-300">Faculty Suggestions:</span> {record.faculty_suggestions}
                                   </div>
                                 )}
-                                {record.guidance_provided && (
-                                  <div className="mt-2 text-sm text-gray-600">
-                                    <span className="font-medium">Guidance Provided:</span> {record.guidance_provided}
-                                  </div>
-                                )}
-                                {record.remarks && (
-                                  <div className="mt-2 text-sm text-gray-600">
-                                    <span className="font-medium">Remarks:</span> {record.remarks}
+                                
+                                {/* Traditional Career Information */}
+                                {(record.career_status || record.company_name || record.job_role || record.placement_date || record.salary_package) && (
+                                  <div className="mt-4 pt-4 border-t">
+                                    <h4 className="font-semibold text-sm mb-3">Placement Information</h4>
+                                    <div className="flex items-center gap-2 mb-2">
+                                      {record.career_status && (
+                                        <h3 className="font-semibold text-gray-900">{record.career_status.replace('_', ' ')}</h3>
+                                      )}
+                                      {record.company_name && (
+                                        <Badge variant="outline">{record.company_name}</Badge>
+                                      )}
+                                      {record.job_role && (
+                                        <Badge variant="secondary">{record.job_role}</Badge>
+                                      )}
+                                    </div>
+                                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+                                      {record.placement_date && (
+                                        <div>
+                                          <span className="text-gray-600">Placement Date:</span>
+                                          <span className="ml-1 font-medium">{format(parseISO(record.placement_date), 'PPP')}</span>
+                                        </div>
+                                      )}
+                                      {record.salary_package && (
+                                        <div>
+                                          <span className="text-gray-600">Salary:</span>
+                                          <span className="ml-1 font-medium">{record.salary_package}</span>
+                                        </div>
+                                      )}
+                                      {record.resume_status && (
+                                        <div>
+                                          <span className="text-gray-600">Resume Status:</span>
+                                          <span className="ml-1 font-medium">{record.resume_status}</span>
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
                                 )}
                               </div>
@@ -2670,15 +2740,6 @@ export const MentorLayout: React.FC = () => {
                                 >
                                   <Edit className="w-4 h-4 mr-1" />
                                   Edit
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => handleDeleteStudentCareer(record.id)}
-                                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                                >
-                                  <Trash2 className="w-4 h-4 mr-1" />
-                                  Delete
                                 </Button>
                               </div>
                             </div>
@@ -4387,7 +4448,7 @@ export const MentorLayout: React.FC = () => {
             <div className="flex items-center justify-between">
               <div>
                 <DialogTitle>
-                  {editingStudentCareer ? 'Edit Career Record' : 'Add Career Record'}
+                  {editingStudentCareer ? 'Edit Career Information' : 'Edit Career Information'}
                 </DialogTitle>
                 <p className="text-sm text-gray-500 mt-1">
                   {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
@@ -4514,12 +4575,85 @@ export const MentorLayout: React.FC = () => {
                 onChange={(e) => setStudentCareerForm({ ...studentCareerForm, remarks: e.target.value })}
               />
             </div>
+            
+            {/* New Career Planning Fields */}
+            <div className="border-t pt-4 mt-4">
+              <h3 className="font-semibold text-sm mb-3">Career Planning</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="career_goal">What do you want to become?</Label>
+                  <Input
+                    id="career_goal"
+                    value={studentCareerForm.career_goal}
+                    onChange={(e) => setStudentCareerForm({ ...studentCareerForm, career_goal: e.target.value })}
+                    placeholder="e.g., Software Engineer, Data Scientist"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="expected_package">Expected Package</Label>
+                  <Select
+                    value={studentCareerForm.expected_package}
+                    onValueChange={(value) => setStudentCareerForm({ ...studentCareerForm, expected_package: value })}
+                  >
+                    <SelectTrigger id="expected_package">
+                      <SelectValue placeholder="Select expected package" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="3-6">3-6 LPA</SelectItem>
+                      <SelectItem value="6-10">6-10 LPA</SelectItem>
+                      <SelectItem value="10-15">10-15 LPA</SelectItem>
+                      <SelectItem value="15-20">15-20 LPA</SelectItem>
+                      <SelectItem value="20-25">20-25 LPA</SelectItem>
+                      <SelectItem value="25+">25+ LPA</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="desired_role">Which role do you want to do?</Label>
+                  <Input
+                    id="desired_role"
+                    value={studentCareerForm.desired_role}
+                    onChange={(e) => setStudentCareerForm({ ...studentCareerForm, desired_role: e.target.value })}
+                    placeholder="e.g., Frontend Developer, Backend Developer"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="dream_company">Dream company to work?</Label>
+                  <Input
+                    id="dream_company"
+                    value={studentCareerForm.dream_company}
+                    onChange={(e) => setStudentCareerForm({ ...studentCareerForm, dream_company: e.target.value })}
+                    placeholder="e.g., Google, Microsoft, Amazon"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2 mt-4">
+                <Label htmlFor="help_needed">Need any help?</Label>
+                <textarea
+                  id="help_needed"
+                  className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  placeholder="Describe any help or guidance needed..."
+                  value={studentCareerForm.help_needed}
+                  onChange={(e) => setStudentCareerForm({ ...studentCareerForm, help_needed: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2 mt-4">
+                <Label htmlFor="faculty_suggestions">Suggestions from Faculty</Label>
+                <textarea
+                  id="faculty_suggestions"
+                  className="w-full min-h-[80px] px-3 py-2 text-sm rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  placeholder="Add your suggestions and guidance..."
+                  value={studentCareerForm.faculty_suggestions}
+                  onChange={(e) => setStudentCareerForm({ ...studentCareerForm, faculty_suggestions: e.target.value })}
+                />
+              </div>
+            </div>
             <div className="flex justify-end gap-3 pt-4">
               <Button variant="outline" onClick={() => setStudentCareerDialogOpen(false)}>
                 Cancel
               </Button>
               <Button onClick={handleSaveStudentCareer}>
-                {editingStudentCareer ? 'Update Record' : 'Add Record'}
+                Save Career Information
               </Button>
             </div>
           </div>
