@@ -515,7 +515,7 @@ class CounsellingNoteSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'student', 'student_name', 'student_roll_number',
             'mentor', 'mentor_name', 'mentor_email',
-            'counselling_date', 'remarks',
+            'counselling_date', 'category', 'training', 'remarks_status', 'remarks',
             'created_at', 'updated_at'
         )
         read_only_fields = ('id', 'created_at', 'updated_at', 'student', 'mentor')

@@ -314,9 +314,43 @@ class MentorRemark(models.Model):
 
 class CounsellingNote(models.Model):
     """Model to store counselling notes for students."""
+    CATEGORY_CHOICES = (
+        ('training', 'Training'),
+        ('career', 'Career'),
+        ('behaviour', 'Behaviour'),
+        ('student_links', 'Student Links'),
+    )
+    
+    TRAINING_CHOICES = (
+        ('pps', 'PPS'),
+        ('oop', 'OOP'),
+        ('dbms', 'DBMS'),
+        ('ds', 'DS'),
+        ('daa', 'DAA'),
+        ('console_apps', 'Console Apps'),
+        ('backend_framework', 'Backend Framework/API'),
+        ('frontend', 'Frontend'),
+        ('iot_hardware', 'IOT Hardware'),
+        ('data_analytics', 'Data Analytics'),
+        ('certification', 'Certification'),
+        ('hackathon', 'Hackathon'),
+        ('internship', 'Internship'),
+    )
+    
+    REMARKS_STATUS_CHOICES = (
+        ('na', 'NA'),
+        ('yet_to_start', 'Yet to Start'),
+        ('in_progress', 'In Progress'),
+        ('need_help', 'Need Help'),
+        ('comfortable', 'Comfortable'),
+    )
+    
     student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='counselling_notes')
     mentor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='given_counselling_notes')
     counselling_date = models.DateField(help_text='Date of the counselling session')
+    category = models.CharField(max_length=50, choices=CATEGORY_CHOICES, blank=True, null=True, help_text='Category of counselling')
+    training = models.CharField(max_length=100, choices=TRAINING_CHOICES, blank=True, null=True, help_text='Training type')
+    remarks_status = models.CharField(max_length=50, choices=REMARKS_STATUS_CHOICES, blank=True, null=True, help_text='Remarks status')
     remarks = models.TextField(help_text='Counselling remarks and notes')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

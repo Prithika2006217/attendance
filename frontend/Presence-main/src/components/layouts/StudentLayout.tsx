@@ -205,6 +205,9 @@ export const StudentLayout: React.FC = () => {
     mentor_name: string;
     mentor_email: string;
     counselling_date: string;
+    category: string;
+    training: string;
+    remarks_status: string;
     remarks: string;
     created_at: string;
     updated_at: string;
@@ -1745,10 +1748,27 @@ export const StudentLayout: React.FC = () => {
                     {counsellingNotes.map((note) => (
                       <div key={note.id} className="border rounded-lg p-4 bg-muted/30">
                         <div className="flex items-start justify-between mb-2">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <Badge variant="outline">
                               {format(parseISO(note.counselling_date), 'PPP')}
                             </Badge>
+                            <Badge variant="secondary" className="capitalize">{note.category || 'General'}</Badge>
+                            {note.training && (
+                              <Badge variant="outline" className="capitalize">{note.training.replace('_', ' ')}</Badge>
+                            )}
+                            {note.remarks_status && (
+                              <Badge 
+                                variant={
+                                  note.remarks_status === 'comfortable' ? 'default' :
+                                  note.remarks_status === 'need_help' ? 'destructive' :
+                                  note.remarks_status === 'in_progress' ? 'secondary' :
+                                  'outline'
+                                }
+                                className="capitalize"
+                              >
+                                {note.remarks_status.replace('_', ' ')}
+                              </Badge>
+                            )}
                           </div>
                           <p className="text-xs text-muted-foreground">
                             {format(parseISO(note.created_at), 'PPP')}
