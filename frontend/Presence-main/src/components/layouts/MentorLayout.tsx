@@ -56,6 +56,7 @@ type AssignedStudent = {
   assignment_notes: string | null;
   assigned_at: string;
   attendance_percentage: number | null;
+  overall_cgpa: number | null;
   // Personal Details
   date_of_birth: string | null;
   date_of_joining: string | null;
@@ -1908,6 +1909,11 @@ export const MentorLayout: React.FC = () => {
                               >
                                 <FileText className="w-4 h-4 mr-2" />
                                 Academic Records
+                                {student.overall_cgpa !== null && student.overall_cgpa !== undefined && (
+                                  <Badge className="ml-2 text-xs bg-blue-100 text-blue-800">
+                                    CGPA: {student.overall_cgpa.toFixed(2)}
+                                  </Badge>
+                                )}
                               </Button>
                               <Button
                                 variant="outline"
@@ -1917,7 +1923,7 @@ export const MentorLayout: React.FC = () => {
                               >
                                 <CalendarIcon className="w-4 h-4 mr-2" />
                                 Attendance
-                                {student.attendance_percentage !== null && (
+                                {student.attendance_percentage !== null && student.attendance_percentage !== undefined && (
                                   <Badge 
                                     className={`ml-2 text-xs ${
                                       student.attendance_percentage >= 75
@@ -1927,7 +1933,7 @@ export const MentorLayout: React.FC = () => {
                                           : 'bg-red-100 text-red-800'
                                     }`}
                                   >
-                                    {student.attendance_percentage.toFixed(1)}%
+                                    Overall: {student.attendance_percentage.toFixed(1)}%
                                   </Badge>
                                 )}
                               </Button>
@@ -2379,7 +2385,7 @@ export const MentorLayout: React.FC = () => {
                                   </div>
                                   <div>
                                     <span className="text-gray-600">Attendance %:</span>
-                                    <span className="ml-1 font-medium">{record.attendance_percentage.toFixed(2)}%</span>
+                                    <span className="ml-1 font-medium">{record.attendance_percentage !== null ? record.attendance_percentage.toFixed(2) + '%' : 'N/A'}</span>
                                   </div>
                                 </div>
                                 {record.remarks && (
@@ -2788,7 +2794,7 @@ export const MentorLayout: React.FC = () => {
       <Dialog open={studentProfileOpen} onOpenChange={setStudentProfileOpen}>
         <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between w-full">
               <div>
                 <DialogTitle>Student Mentoring Record</DialogTitle>
                 <p className="text-sm text-gray-500 mt-1">Complete profile and academic information</p>
@@ -2800,12 +2806,6 @@ export const MentorLayout: React.FC = () => {
                     Edit Profile
                   </Button>
                 )}
-                <Button variant="ghost" size="sm" onClick={() => {
-                  setStudentProfileOpen(false);
-                  setEditingStudentProfile(false);
-                }}>
-                  <X className="w-4 h-4" />
-                </Button>
               </div>
             </div>
           </DialogHeader>
@@ -3687,18 +3687,13 @@ export const MentorLayout: React.FC = () => {
       <Dialog open={academicRecordDialogOpen} onOpenChange={setAcademicRecordDialogOpen}>
         <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <DialogTitle>
-                  {editingAcademicRecord ? 'Edit Academic Record' : 'Add Academic Record'}
-                </DialogTitle>
-                <p className="text-sm text-gray-500 mt-1">
-                  {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
-                </p>
-              </div>
-              <Button variant="ghost" size="sm" onClick={() => setAcademicRecordDialogOpen(false)}>
-                <X className="w-4 h-4" />
-              </Button>
+            <div>
+              <DialogTitle>
+                {editingAcademicRecord ? 'Edit Academic Record' : 'Add Academic Record'}
+              </DialogTitle>
+              <p className="text-sm text-gray-500 mt-1">
+                {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
+              </p>
             </div>
           </DialogHeader>
           <div className="space-y-4">
@@ -3863,18 +3858,13 @@ export const MentorLayout: React.FC = () => {
       <Dialog open={mentorAttendanceDialogOpen} onOpenChange={setMentorAttendanceDialogOpen}>
         <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <DialogTitle>
-                  {editingMentorAttendance ? 'Edit Attendance Record' : 'Add Attendance Record'}
-                </DialogTitle>
-                <p className="text-sm text-gray-500 mt-1">
-                  {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
-                </p>
-              </div>
-              <Button variant="ghost" size="sm" onClick={() => setMentorAttendanceDialogOpen(false)}>
-                <X className="w-4 h-4" />
-              </Button>
+            <div>
+              <DialogTitle>
+                {editingMentorAttendance ? 'Edit Attendance Record' : 'Add Attendance Record'}
+              </DialogTitle>
+              <p className="text-sm text-gray-500 mt-1">
+                {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
+              </p>
             </div>
           </DialogHeader>
           <div className="space-y-4">
@@ -3904,12 +3894,24 @@ export const MentorLayout: React.FC = () => {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="semester">Semester *</Label>
-                <Input
-                  id="semester"
+                <Select
                   value={mentorAttendanceForm.semester}
-                  onChange={(e) => setMentorAttendanceForm({ ...mentorAttendanceForm, semester: e.target.value })}
-                  placeholder="e.g., 1-1, 2-2"
-                />
+                  onValueChange={(value) => setMentorAttendanceForm({ ...mentorAttendanceForm, semester: value })}
+                >
+                  <SelectTrigger id="semester">
+                    <SelectValue placeholder="Select semester" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1-1">1-1</SelectItem>
+                    <SelectItem value="1-2">1-2</SelectItem>
+                    <SelectItem value="2-1">2-1</SelectItem>
+                    <SelectItem value="2-2">2-2</SelectItem>
+                    <SelectItem value="3-1">3-1</SelectItem>
+                    <SelectItem value="3-2">3-2</SelectItem>
+                    <SelectItem value="4-1">4-1</SelectItem>
+                    <SelectItem value="4-2">4-2</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2 md:col-span-2">
                 <Label htmlFor="academic_year">Academic Year *</Label>
@@ -3983,16 +3985,11 @@ export const MentorLayout: React.FC = () => {
       <Dialog open={studentAchievementsOpen} onOpenChange={setStudentAchievementsOpen}>
         <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <DialogTitle>Student Achievements</DialogTitle>
-                <p className="text-sm text-gray-500 mt-1">
-                  {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
-                </p>
-              </div>
-              <Button variant="ghost" size="sm" onClick={() => setStudentAchievementsOpen(false)}>
-                <X className="w-4 h-4" />
-              </Button>
+            <div>
+              <DialogTitle>Student Achievements</DialogTitle>
+              <p className="text-sm text-gray-500 mt-1">
+                {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
+              </p>
             </div>
           </DialogHeader>
           <div className="space-y-4">
@@ -4037,18 +4034,13 @@ export const MentorLayout: React.FC = () => {
       <Dialog open={mentorRemarksDialogOpen} onOpenChange={setMentorRemarksDialogOpen}>
         <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <DialogTitle>
-                  {editingMentorRemark ? 'Edit Mentor Remark' : 'Add Mentor Remark'}
-                </DialogTitle>
-                <p className="text-sm text-gray-500 mt-1">
-                  {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
-                </p>
-              </div>
-              <Button variant="ghost" size="sm" onClick={() => setMentorRemarksDialogOpen(false)}>
-                <X className="w-4 h-4" />
-              </Button>
+            <div>
+              <DialogTitle>
+                {editingMentorRemark ? 'Edit Mentor Remark' : 'Add Mentor Remark'}
+              </DialogTitle>
+              <p className="text-sm text-gray-500 mt-1">
+                {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
+              </p>
             </div>
           </DialogHeader>
           <div className="space-y-4">
@@ -4109,18 +4101,13 @@ export const MentorLayout: React.FC = () => {
       <Dialog open={counsellingNotesDialogOpen} onOpenChange={setCounsellingNotesDialogOpen}>
         <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <DialogTitle>
-                  {editingCounsellingNote ? 'Edit Counselling Note' : 'Add Counselling Note'}
-                </DialogTitle>
-                <p className="text-sm text-gray-500 mt-1">
-                  {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
-                </p>
-              </div>
-              <Button variant="ghost" size="sm" onClick={() => setCounsellingNotesDialogOpen(false)}>
-                <X className="w-4 h-4" />
-              </Button>
+            <div>
+              <DialogTitle>
+                {editingCounsellingNote ? 'Edit Counselling Note' : 'Add Counselling Note'}
+              </DialogTitle>
+              <p className="text-sm text-gray-500 mt-1">
+                {selectedStudent?.full_name || selectedStudent?.username} - {selectedStudent?.roll_number || 'N/A'}
+              </p>
             </div>
           </DialogHeader>
           <div className="space-y-4">

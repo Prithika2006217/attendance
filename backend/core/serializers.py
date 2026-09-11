@@ -365,13 +365,21 @@ class MentorStudentAssignmentSerializer(serializers.ModelSerializer):
     student_roll_number = serializers.SerializerMethodField(read_only=True)
     student_department = serializers.SerializerMethodField(read_only=True)
     student_section = serializers.SerializerMethodField(read_only=True)
+    student_year = serializers.SerializerMethodField(read_only=True)
+    student_phone = serializers.SerializerMethodField(read_only=True)
+    student_is_detained = serializers.SerializerMethodField(read_only=True)
+    student_photo = serializers.SerializerMethodField(read_only=True)
+    attendance_percentage = serializers.SerializerMethodField(read_only=True)
+    overall_cgpa = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = MentorStudentAssignment
         fields = (
             'id', 'mentor', 'student', 'mentor_name', 'mentor_email',
             'student_name', 'student_email', 'student_roll_number',
-            'student_department', 'student_section', 'assigned_at', 'notes'
+            'student_department', 'student_section', 'student_year',
+            'student_phone', 'student_is_detained', 'student_photo',
+            'assigned_at', 'notes', 'attendance_percentage', 'overall_cgpa'
         )
         read_only_fields = ('id', 'assigned_at')
 
@@ -395,6 +403,66 @@ class MentorStudentAssignmentSerializer(serializers.ModelSerializer):
 
     def get_student_section(self, obj):
         return obj.student.section
+
+    def get_student_year(self, obj):
+        return obj.student.year
+
+    def get_student_phone(self, obj):
+        return obj.student.phone
+
+    def get_student_is_detained(self, obj):
+        return obj.student.is_detained
+
+    def get_student_photo(self, obj):
+        if obj.student.photo and hasattr(obj.student.photo, 'url'):
+            photo_url = obj.student.photo.url
+            if not photo_url.startswith('/media/'):
+                photo_url = f"/media/{photo_url.lstrip('/')}"
+            return photo_url
+        return None
+
+    def get_student_roll_number(self, obj):
+        return obj.student.roll_number
+
+    def get_student_department(self, obj):
+        return obj.student.department
+
+    def get_student_section(self, obj):
+        return obj.student.section
+
+    def get_attendance_percentage(self, obj):
+        """Calculate overall attendance percentage for the student."""
+        from .models import Attendance
+        try:
+            total_classes = Attendance.objects.filter(student=obj.student).count()
+            if total_classes == 0:
+                return None
+            present_classes = Attendance.objects.filter(student=obj.student, status='present').count()
+            percentage = (present_classes / total_classes) * 100
+            return round(percentage, 1)
+        except Exception:
+            return None
+
+    def get_overall_cgpa(self, obj):
+        """Calculate overall CGPA from academic records."""
+        from .models import StudentAcademicRecord
+        try:
+            academic_records = StudentAcademicRecord.objects.filter(student=obj.student)
+            if not academic_records.exists():
+                return None
+            
+            total_cgpa = 0
+            count = 0
+            for record in academic_records:
+                if record.cgpa:
+                    total_cgpa += record.cgpa
+                    count += 1
+            
+            if count == 0:
+                return None
+            return round(total_cgpa / count, 2)
+        except Exception:
+            return None
 
 
 class StudentAcademicRecordSerializer(serializers.ModelSerializer):
