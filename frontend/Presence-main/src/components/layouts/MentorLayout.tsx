@@ -55,6 +55,7 @@ type AssignedStudent = {
   is_detained: boolean;
   assignment_notes: string | null;
   assigned_at: string;
+  attendance_percentage: number | null;
   // Personal Details
   date_of_birth: string | null;
   date_of_joining: string | null;
@@ -1547,6 +1548,12 @@ export const MentorLayout: React.FC = () => {
     setActiveTab('mentor-attendance');
   };
 
+  const handleViewCounsellingNotes = (student: AssignedStudent) => {
+    setSelectedStudent(student);
+    loadCounsellingNotes(student.id);
+    setActiveTab('counselling-notes');
+  };
+
   const handleAddMentorAttendance = () => {
     setEditingMentorAttendance(null);
     setMentorAttendanceForm({
@@ -1910,6 +1917,28 @@ export const MentorLayout: React.FC = () => {
                               >
                                 <CalendarIcon className="w-4 h-4 mr-2" />
                                 Attendance
+                                {student.attendance_percentage !== null && (
+                                  <Badge 
+                                    className={`ml-2 text-xs ${
+                                      student.attendance_percentage >= 75
+                                        ? 'bg-green-100 text-green-800'
+                                        : student.attendance_percentage >= 60
+                                          ? 'bg-yellow-100 text-yellow-800'
+                                          : 'bg-red-100 text-red-800'
+                                    }`}
+                                  >
+                                    {student.attendance_percentage.toFixed(1)}%
+                                  </Badge>
+                                )}
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleViewCounsellingNotes(student)}
+                                className="w-full md:w-auto bg-pink-50 hover:bg-pink-100 border-pink-200"
+                              >
+                                <Heart className="w-4 h-4 mr-2" />
+                                Counselling Notes
                               </Button>
                               <div className="text-gray-500">
                                 Assigned: {new Date(student.assigned_at).toLocaleDateString()}
@@ -3637,135 +3666,6 @@ export const MentorLayout: React.FC = () => {
                   {studentCareerRecords.length > 3 && (
                     <p className="text-xs text-gray-500 text-center">
                       And {studentCareerRecords.length - 3} more career records...
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              {/* Behaviour Section */}
-              <div className="space-y-4 bg-amber-50 p-4 rounded-lg">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-semibold text-lg flex items-center gap-2 text-amber-900">
-                    <Star className="w-5 h-5" />
-                    Behaviour Assessment
-                  </h3>
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
-                    onClick={() => {
-                      if (selectedStudent) {
-                        loadStudentBehaviourRecords(selectedStudent.id);
-                        setStudentBehaviourDialogOpen(true);
-                      }
-                    }}
-                  >
-                    <Plus className="w-4 h-4 mr-2" />
-                    Add Behaviour
-                  </Button>
-                </div>
-                <div className="grid gap-2">
-                  {studentBehaviourRecords.length === 0 ? (
-                    <p className="text-sm text-gray-600">No behaviour records recorded yet.</p>
-                  ) : (
-                    studentBehaviourRecords.slice(0, 3).map((behaviour) => (
-                      <div key={behaviour.id} className="bg-white p-3 rounded-lg border">
-                        <div className="flex items-center gap-2 mb-1">
-                          <Badge variant="secondary" className="capitalize text-xs">
-                            {behaviour.behaviour_category.replace('_', ' ')}
-                          </Badge>
-                          <Badge 
-                            className={`text-xs ${
-                              behaviour.rating >= 4 
-                                ? 'bg-green-100 text-green-800' 
-                                : behaviour.rating >= 3 
-                                  ? 'bg-yellow-100 text-yellow-800' 
-                                  : 'bg-red-100 text-red-800'
-                            }`}
-                          >
-                            Rating: {behaviour.rating}/5
-                          </Badge>
-                          <Badge variant="outline" className="text-xs">
-                            {format(parseISO(behaviour.assessment_date), 'PPP')}
-                          </Badge>
-                        </div>
-                        <p className="text-sm mb-1">{behaviour.positive_aspects || 'No positive aspects recorded'}</p>
-                        {behaviour.areas_for_improvement && (
-                          <p className="text-xs text-gray-600">
-                            <span className="font-medium">Improvement:</span> {behaviour.areas_for_improvement}
-                          </p>
-                        )}
-                      </div>
-                    ))
-                  )}
-                  {studentBehaviourRecords.length > 3 && (
-                    <p className="text-xs text-gray-500 text-center">
-                      And {studentBehaviourRecords.length - 3} more behaviour records...
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              {/* Student Links Section */}
-              <div className="space-y-4 bg-indigo-50 p-4 rounded-lg">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-semibold text-lg flex items-center gap-2 text-indigo-900">
-                    <LinkIcon className="w-5 h-5" />
-                    Shared Resources
-                  </h3>
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
-                    onClick={() => {
-                      if (selectedStudent) {
-                        loadStudentLinkRecords(selectedStudent.id);
-                        setStudentLinkDialogOpen(true);
-                      }
-                    }}
-                  >
-                    <Plus className="w-4 h-4 mr-2" />
-                    Add Link
-                  </Button>
-                </div>
-                <div className="grid gap-2">
-                  {studentLinkRecords.length === 0 ? (
-                    <p className="text-sm text-gray-600">No shared resources yet.</p>
-                  ) : (
-                    studentLinkRecords.slice(0, 3).map((link) => (
-                      <div key={link.id} className="bg-white p-3 rounded-lg border">
-                        <div className="flex items-center gap-2 mb-1">
-                          <Badge variant="secondary" className="capitalize text-xs">
-                            {link.link_category.replace('_', ' ')}
-                          </Badge>
-                          <Badge 
-                            className={`text-xs ${
-                              link.status === 'completed' 
-                                ? 'bg-green-100 text-green-800' 
-                                : link.status === 'in_progress' 
-                                  ? 'bg-blue-100 text-blue-800' 
-                                  : 'bg-gray-100 text-gray-800'
-                            }`}
-                          >
-                            {link.status}
-                          </Badge>
-                          {link.importance && (
-                            <Badge variant="outline" className="text-xs">{link.importance}</Badge>
-                          )}
-                        </div>
-                        <p className="font-medium text-sm">{link.link_title}</p>
-                        <a 
-                          href={link.link_url} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="text-xs text-blue-600 hover:underline break-all"
-                        >
-                          {link.link_url}
-                        </a>
-                      </div>
-                    ))
-                  )}
-                  {studentLinkRecords.length > 3 && (
-                    <p className="text-xs text-gray-500 text-center">
-                      And {studentLinkRecords.length - 3} more links...
                     </p>
                   )}
                 </div>

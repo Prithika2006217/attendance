@@ -1,6 +1,6 @@
 
 from rest_framework import serializers
-from .models import User, Attendance, Department, Subject, Section, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord, StudentAchievement, MentorRemark, CounsellingNote, StudentBehaviour, StudentCareer, StudentLink, StudentTraining
+from .models import User, Attendance, Department, Subject, Section, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord, StudentAchievement, MentorRemark, CounsellingNote, StudentBehaviour, StudentCareer, StudentLink, StudentTraining, Permission, RolePermission, UserPermission, TabAccess
 from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -640,3 +640,43 @@ class StudentTrainingSerializer(serializers.ModelSerializer):
 
     def get_mentor_name(self, obj):
         return obj.mentor.full_name or obj.mentor.username if obj.mentor else None
+
+
+class PermissionSerializer(serializers.ModelSerializer):
+    """Serializer for permissions."""
+    class Meta:
+        model = Permission
+        fields = ('id', 'name', 'display_name', 'description', 'permission_type', 'module', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'created_at', 'updated_at')
+
+
+class RolePermissionSerializer(serializers.ModelSerializer):
+    """Serializer for role permissions."""
+    permission_details = PermissionSerializer(source='permission', read_only=True)
+    
+    class Meta:
+        model = RolePermission
+        fields = ('id', 'role', 'permission', 'permission_details', 'can_access', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'created_at', 'updated_at')
+
+
+class UserPermissionSerializer(serializers.ModelSerializer):
+    """Serializer for user permissions."""
+    permission_details = PermissionSerializer(source='permission', read_only=True)
+    user_username = serializers.SerializerMethodField(read_only=True)
+    
+    class Meta:
+        model = UserPermission
+        fields = ('id', 'user', 'user_username', 'permission', 'permission_details', 'can_access', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'created_at', 'updated_at')
+    
+    def get_user_username(self, obj):
+        return obj.user.username
+
+
+class TabAccessSerializer(serializers.ModelSerializer):
+    """Serializer for tab access control."""
+    class Meta:
+        model = TabAccess
+        fields = ('id', 'role', 'tab', 'can_access', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'created_at', 'updated_at')

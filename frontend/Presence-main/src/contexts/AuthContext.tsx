@@ -1,11 +1,11 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
-import { apiUrl } from "@/lib/api";
+import { apiUrl, authFetch } from "@/lib/api";
 
 interface User {
   id: string;
   name: string;
   email: string;
-  role: "admin" | "faculty" | "student" | "mentor";
+  role: "admin" | "faculty" | "student" | "mentor" | "hod";
   departmentId?: string;
   rollNumber?: string;
   subjects?: string[];
@@ -21,10 +21,15 @@ interface AuthContextType {
     password: string
   ) => Promise<{ success: true } | { success: false; error: string }>;
   logout: () => void;
-  switchRole: (role: "admin" | "faculty" | "student" | "mentor") => void;
+  switchRole: (role: "admin" | "faculty" | "student" | "mentor" | "hod") => void;
   /** Merge into the logged-in session (e.g. after profile email/name update). */
   updateSessionUser: (updates: Partial<Pick<User, "email" | "name">>) => void;
   isLoading: boolean;
+  permissions: string[];
+  accessibleTabs: string[];
+  hasPermission: (permission: string) => boolean;
+  hasTabAccess: (tab: string) => boolean;
+  refreshPermissions: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -42,14 +47,58 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [permissions, setPermissions] = useState<string[]>([]);
+  const [accessibleTabs, setAccessibleTabs] = useState<string[]>([]);
 
   useEffect(() => {
     const storedUser = localStorage.getItem("attendanceUser");
     if (storedUser) {
-      setUser(JSON.parse(storedUser));
+      const parsedUser = JSON.parse(storedUser);
+      setUser(parsedUser);
+      refreshPermissionsForUser(parsedUser);
     }
     setIsLoading(false);
   }, []);
+
+  const refreshPermissionsForUser = async (currentUser: User | null) => {
+    if (!currentUser) {
+      setPermissions([]);
+      setAccessibleTabs([]);
+      return;
+    }
+
+    try {
+      const token = currentUser.accessToken || localStorage.getItem('accessToken');
+      const response = await fetch(apiUrl("/api/user-permissions-summary/"), {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setPermissions(data.permissions || []);
+        setAccessibleTabs(data.accessible_tabs || []);
+      }
+    } catch (error) {
+      console.error("Failed to load permissions:", error);
+      setPermissions([]);
+      setAccessibleTabs([]);
+    }
+  };
+
+  const refreshPermissions = async () => {
+    await refreshPermissionsForUser(user);
+  };
+
+  const hasPermission = (permission: string): boolean => {
+    return permissions.includes(permission);
+  };
+
+  const hasTabAccess = (tab: string): boolean => {
+    return accessibleTabs.includes(tab);
+  };
 
   // 🔥 LOGIN CONNECTED TO DJANGO WITH JWT TOKENS
 const login = async (
@@ -94,6 +143,9 @@ const login = async (
     console.log("Login successful, storing tokens. Auto-detected role:", data.role);
     setUser(loggedUser);
     localStorage.setItem("attendanceUser", JSON.stringify(loggedUser));
+    
+    // Load permissions after successful login
+    await refreshPermissionsForUser(loggedUser);
 
     return { success: true };
   } catch (error) {
@@ -116,6 +168,8 @@ function getFirstError(data: Record<string, unknown>): string {
 
   const logout = () => {
     setUser(null);
+    setPermissions([]);
+    setAccessibleTabs([]);
     localStorage.removeItem("attendanceUser");
   };
 
@@ -129,7 +183,7 @@ function getFirstError(data: Record<string, unknown>): string {
   };
 
   // Temporary demo role switch (optional)
-  const switchRole = (role: "admin" | "faculty" | "student" | "mentor") => {
+  const switchRole = (role: "admin" | "faculty" | "student" | "mentor" | "hod") => {
     let demoUser: User;
 
     switch (role) {
@@ -157,6 +211,14 @@ function getFirstError(data: Record<string, unknown>): string {
           role: "mentor",
         };
         break;
+      case "hod":
+        demoUser = {
+          id: "hod1",
+          name: "HOD",
+          email: "hod@university.edu",
+          role: "hod",
+        };
+        break;
       case "student":
       default:
         demoUser = {
@@ -170,6 +232,7 @@ function getFirstError(data: Record<string, unknown>): string {
 
     setUser(demoUser);
     localStorage.setItem("attendanceUser", JSON.stringify(demoUser));
+    refreshPermissionsForUser(demoUser);
   };
 
   const value = {
@@ -179,6 +242,11 @@ function getFirstError(data: Record<string, unknown>): string {
     switchRole,
     updateSessionUser,
     isLoading,
+    permissions,
+    accessibleTabs,
+    hasPermission,
+    hasTabAccess,
+    refreshPermissions,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

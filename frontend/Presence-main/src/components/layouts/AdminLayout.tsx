@@ -192,6 +192,18 @@ export const AdminLayout: React.FC = () => {
   const [deleteAllStudentsLoading, setDeleteAllStudentsLoading] = useState(false);
   const [addStudentOpen, setAddStudentOpen] = useState(false);
 
+  // Permission management state
+  const [permissionUserSearchQuery, setPermissionUserSearchQuery] = useState('');
+  const [permissionSearchResults, setPermissionSearchResults] = useState<Array<any>>([]);
+  const [permissionDialogOpen, setPermissionDialogOpen] = useState(false);
+  const [currentRole, setCurrentRole] = useState<string | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<number | null>(null);
+  const [rolePermissions, setRolePermissions] = useState<Array<any>>([]);
+  const [userPermissions, setUserPermissions] = useState<Array<any>>([]);
+  const [tabAccess, setTabAccess] = useState<Array<any>>([]);
+  const [allPermissions, setAllPermissions] = useState<Array<any>>([]);
+  const [allTabs, setAllTabs] = useState<Array<any>>([]);
+
   /** QR Attendance state for Admin */
   const [adminQrSessions, setAdminQrSessions] = useState<Array<any>>([]);
   const [adminActiveQrSession, setAdminActiveQrSession] = useState<any>(null);
@@ -2418,6 +2430,210 @@ export const AdminLayout: React.FC = () => {
     };
   }, [adminQrRefreshInterval]);
 
+  // Permission management functions
+  const initializeDefaultPermissions = async () => {
+    try {
+      const res = await authFetch(apiUrl('/api/initialize-default-permissions/'), {
+        method: 'POST'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        toast({ title: 'Success', description: data.detail });
+      } else {
+        const error = await res.json();
+        toast({ title: 'Error', description: error.detail || 'Failed to initialize permissions', variant: 'destructive' });
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Network error', variant: 'destructive' });
+    }
+  };
+
+  const loadAllPermissions = async () => {
+    try {
+      const res = await authFetch(apiUrl('/api/permissions/'));
+      if (res.ok) {
+        const data = await res.json();
+        setAllPermissions(data);
+      }
+    } catch (error) {
+      console.error('Error loading permissions:', error);
+    }
+  };
+
+  const loadRolePermissions = async (role: string) => {
+    setCurrentRole(role);
+    setCurrentUserId(null);
+    try {
+      const res = await authFetch(apiUrl(`/api/role-permissions/?role=${role}`));
+      if (res.ok) {
+        const data = await res.json();
+        setRolePermissions(data);
+        await loadAllPermissions();
+        setPermissionDialogOpen(true);
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Failed to load role permissions', variant: 'destructive' });
+    }
+  };
+
+  const loadUserPermissions = async (userId: number) => {
+    setCurrentUserId(userId);
+    setCurrentRole(null);
+    try {
+      const res = await authFetch(apiUrl(`/api/user-permissions/?user_id=${userId}`));
+      if (res.ok) {
+        const data = await res.json();
+        setUserPermissions(data);
+        await loadAllPermissions();
+        setPermissionDialogOpen(true);
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Failed to load user permissions', variant: 'destructive' });
+    }
+  };
+
+  const loadTabAccess = async (role: string) => {
+    setCurrentRole(role);
+    setCurrentUserId(null);
+    try {
+      const res = await authFetch(apiUrl(`/api/tab-access/?role=${role}`));
+      if (res.ok) {
+        const data = await res.json();
+        setTabAccess(data);
+        setAllTabs([
+          { value: 'dashboard', label: 'Dashboard' },
+          { value: 'attendance', label: 'Attendance' },
+          { value: 'students', label: 'Students' },
+          { value: 'mentorship', label: 'Mentorship' },
+          { value: 'reports', label: 'Reports' },
+          { value: 'settings', label: 'Settings' },
+          { value: 'faculty_portal', label: 'Faculty Portal' },
+          { value: 'student_portal', label: 'Student Portal' },
+          { value: 'mentor_dashboard', label: 'Mentor Dashboard' },
+          { value: 'admin_panel', label: 'Admin Panel' },
+        ]);
+        setPermissionDialogOpen(true);
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Failed to load tab access', variant: 'destructive' });
+    }
+  };
+
+  const searchUsers = async () => {
+    if (!permissionUserSearchQuery.trim()) {
+      setPermissionSearchResults([]);
+      return;
+    }
+    try {
+      const res = await authFetch(apiUrl(`/api/users/?search=${permissionUserSearchQuery}`));
+      if (res.ok) {
+        const data = await res.json();
+        setPermissionSearchResults(data);
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Failed to search users', variant: 'destructive' });
+    }
+  };
+
+  const saveRolePermission = async (permissionId: number, canAccess: boolean) => {
+    try {
+      const existing = rolePermissions.find((rp: any) => rp.permission === permissionId);
+      if (existing) {
+        const res = await authFetch(apiUrl(`/api/role-permissions/${existing.id}/`), {
+          method: 'PUT',
+          body: JSON.stringify({ can_access: canAccess })
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setRolePermissions(prev => prev.map((rp: any) => rp.id === existing.id ? updated : rp));
+          toast({ title: 'Success', description: 'Permission updated' });
+        }
+      } else {
+        const res = await authFetch(apiUrl('/api/role-permissions/'), {
+          method: 'POST',
+          body: JSON.stringify({
+            role: currentRole,
+            permission: permissionId,
+            can_access: canAccess
+          })
+        });
+        if (res.ok) {
+          const created = await res.json();
+          setRolePermissions(prev => [...prev, created]);
+          toast({ title: 'Success', description: 'Permission added' });
+        }
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Failed to save permission', variant: 'destructive' });
+    }
+  };
+
+  const saveUserPermission = async (permissionId: number, canAccess: boolean) => {
+    try {
+      const existing = userPermissions.find((up: any) => up.permission === permissionId);
+      if (existing) {
+        const res = await authFetch(apiUrl(`/api/user-permissions/${existing.id}/`), {
+          method: 'PUT',
+          body: JSON.stringify({ can_access: canAccess })
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setUserPermissions(prev => prev.map((up: any) => up.id === existing.id ? updated : up));
+          toast({ title: 'Success', description: 'Permission updated' });
+        }
+      } else {
+        const res = await authFetch(apiUrl('/api/user-permissions/'), {
+          method: 'POST',
+          body: JSON.stringify({
+            user: currentUserId,
+            permission: permissionId,
+            can_access: canAccess
+          })
+        });
+        if (res.ok) {
+          const created = await res.json();
+          setUserPermissions(prev => [...prev, created]);
+          toast({ title: 'Success', description: 'Permission added' });
+        }
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Failed to save permission', variant: 'destructive' });
+    }
+  };
+
+  const saveTabAccess = async (tab: string, canAccess: boolean) => {
+    try {
+      const existing = tabAccess.find((ta: any) => ta.tab === tab);
+      if (existing) {
+        const res = await authFetch(apiUrl(`/api/tab-access/${existing.id}/`), {
+          method: 'PUT',
+          body: JSON.stringify({ can_access: canAccess })
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setTabAccess(prev => prev.map((ta: any) => ta.id === existing.id ? updated : ta));
+          toast({ title: 'Success', description: 'Tab access updated' });
+        }
+      } else {
+        const res = await authFetch(apiUrl('/api/tab-access/'), {
+          method: 'POST',
+          body: JSON.stringify({
+            role: currentRole,
+            tab: tab,
+            can_access: canAccess
+          })
+        });
+        if (res.ok) {
+          const created = await res.json();
+          setTabAccess(prev => [...prev, created]);
+          toast({ title: 'Success', description: 'Tab access added' });
+        }
+      }
+    } catch (error) {
+      toast({ title: 'Error', description: 'Failed to save tab access', variant: 'destructive' });
+    }
+  };
+
   const handleImportStudentsFromExcel = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -2705,6 +2921,7 @@ export const AdminLayout: React.FC = () => {
             <TabsTrigger value="attendance-records">Attendance Records</TabsTrigger>
             <TabsTrigger value="reports">Data Management</TabsTrigger>
             <TabsTrigger value="defaulters">Defaulters</TabsTrigger>
+            <TabsTrigger value="permissions">Permissions</TabsTrigger>
             <TabsTrigger value="profile">Profile</TabsTrigger>
           </TabsList>
 
@@ -6016,6 +6233,105 @@ export const AdminLayout: React.FC = () => {
             </DialogContent>
           </Dialog>
 
+          {/* Permissions Tab */}
+          <TabsContent value="permissions" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Permission Management</CardTitle>
+                <CardDescription>Manage permissions and access control for different user roles</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <Button onClick={initializeDefaultPermissions} className="w-full sm:w-auto">
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Initialize Default Permissions
+                  </Button>
+                  
+                  <div className="border rounded-lg p-4">
+                    <h3 className="font-semibold mb-4">Role-Based Permissions</h3>
+                    <div className="grid gap-4">
+                      {['admin', 'faculty', 'mentor', 'student', 'hod'].map((role) => (
+                        <div key={role} className="border rounded p-3">
+                          <div className="flex items-center justify-between mb-2">
+                            <h4 className="font-medium capitalize">{role}</h4>
+                            <Button 
+                              size="sm" 
+                              variant="outline"
+                              onClick={() => loadRolePermissions(role)}
+                            >
+                              <Edit className="w-4 h-4 mr-1" />
+                              Edit
+                            </Button>
+                          </div>
+                          <div className="text-sm text-gray-600">
+                            Manage permissions for {role} role
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="border rounded-lg p-4">
+                    <h3 className="font-semibold mb-4">Tab Access Control</h3>
+                    <div className="grid gap-4">
+                      {['admin', 'faculty', 'mentor', 'student', 'hod'].map((role) => (
+                        <div key={role} className="border rounded p-3">
+                          <div className="flex items-center justify-between mb-2">
+                            <h4 className="font-medium capitalize">{role}</h4>
+                            <Button 
+                              size="sm" 
+                              variant="outline"
+                              onClick={() => loadTabAccess(role)}
+                            >
+                              <Edit className="w-4 h-4 mr-1" />
+                              Edit
+                            </Button>
+                          </div>
+                          <div className="text-sm text-gray-600">
+                            Manage tab access for {role} role
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="border rounded-lg p-4">
+                    <h3 className="font-semibold mb-4">Custom User Permissions</h3>
+                    <div className="flex gap-2">
+                      <Input 
+                        placeholder="Search user by username or email..." 
+                        value={permissionUserSearchQuery}
+                        onChange={(e) => setPermissionUserSearchQuery(e.target.value)}
+                        className="flex-1"
+                      />
+                      <Button onClick={searchUsers}>Search</Button>
+                    </div>
+                    {permissionSearchResults.length > 0 && (
+                      <div className="mt-4 space-y-2">
+                        {permissionSearchResults.map((user) => (
+                          <div key={user.id} className="border rounded p-3 flex items-center justify-between">
+                            <div>
+                              <div className="font-medium">{user.username}</div>
+                              <div className="text-sm text-gray-600">{user.email} - {user.role}</div>
+                            </div>
+                            <Button 
+                              size="sm" 
+                              variant="outline"
+                              onClick={() => loadUserPermissions(user.id)}
+                            >
+                              <Edit className="w-4 h-4 mr-1" />
+                              Edit
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
           {/* Profile Tab */}
           <TabsContent value="profile" className="space-y-6">
             <Card>
@@ -6109,6 +6425,95 @@ export const AdminLayout: React.FC = () => {
           <DialogFooter>
             <Button variant="outline" onClick={() => setChangePasswordOpen(false)}>Cancel</Button>
             <Button onClick={handleAdminChangePassword}>Change password</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Permission Management Dialog */}
+      <Dialog open={permissionDialogOpen} onOpenChange={setPermissionDialogOpen}>
+        <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {currentUserId ? 'User Permissions' : currentRole ? `${currentRole.charAt(0).toUpperCase() + currentRole.slice(1)} Permissions` : 'Permissions'}
+            </DialogTitle>
+            <DialogDescription>
+              {currentUserId ? 'Manage custom permissions for this user' : currentRole ? `Manage permissions for ${currentRole} role` : 'Manage permissions'}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-6 py-4">
+            {currentRole && tabAccess.length > 0 && (
+              <div className="space-y-4">
+                <h3 className="font-semibold text-lg">Tab Access</h3>
+                <div className="grid gap-3">
+                  {allTabs.map((tab) => {
+                    const access = tabAccess.find((ta: any) => ta.tab === tab.value);
+                    const hasAccess = access ? access.can_access : false;
+                    return (
+                      <div key={tab.value} className="flex items-center justify-between p-3 border rounded-lg">
+                        <span className="font-medium">{tab.label}</span>
+                        <Checkbox
+                          checked={hasAccess}
+                          onCheckedChange={(checked) => saveTabAccess(tab.value, checked as boolean)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {currentRole && rolePermissions.length > 0 && (
+              <div className="space-y-4">
+                <h3 className="font-semibold text-lg">CRUD Permissions</h3>
+                <div className="grid gap-3">
+                  {allPermissions.map((permission) => {
+                    const rp = rolePermissions.find((rp: any) => rp.permission === permission.id);
+                    const hasAccess = rp ? rp.can_access : false;
+                    return (
+                      <div key={permission.id} className="flex items-center justify-between p-3 border rounded-lg">
+                        <div>
+                          <div className="font-medium">{permission.display_name}</div>
+                          <div className="text-sm text-gray-600">{permission.module} - {permission.permission_type}</div>
+                        </div>
+                        <Checkbox
+                          checked={hasAccess}
+                          onCheckedChange={(checked) => saveRolePermission(permission.id, checked as boolean)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {currentUserId && userPermissions.length > 0 && (
+              <div className="space-y-4">
+                <h3 className="font-semibold text-lg">Custom User Permissions</h3>
+                <div className="grid gap-3">
+                  {allPermissions.map((permission) => {
+                    const up = userPermissions.find((up: any) => up.permission === permission.id);
+                    const hasAccess = up ? up.can_access : false;
+                    return (
+                      <div key={permission.id} className="flex items-center justify-between p-3 border rounded-lg">
+                        <div>
+                          <div className="font-medium">{permission.display_name}</div>
+                          <div className="text-sm text-gray-600">{permission.module} - {permission.permission_type}</div>
+                        </div>
+                        <Checkbox
+                          checked={hasAccess}
+                          onCheckedChange={(checked) => saveUserPermission(permission.id, checked as boolean)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPermissionDialogOpen(false)}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

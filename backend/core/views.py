@@ -19,15 +19,108 @@ import io
 import base64
 import random
 from decimal import Decimal
-from .models import User, Attendance, Department, Subject, Section, AttendancePortalControl, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord, CounsellingNote, StudentBehaviour, StudentCareer, StudentLink, StudentTraining
+from .models import User, Attendance, Department, Subject, Section, AttendancePortalControl, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord, CounsellingNote, StudentBehaviour, StudentCareer, StudentLink, StudentTraining, Permission, RolePermission, UserPermission, TabAccess
 from .serializers import (
     RegisterSerializer, LoginSerializer, AttendanceSerializer, UserSerializer,
     DepartmentSerializer, SubjectSerializer, SectionSerializer, FacultyDepartmentSectionSerializer,
     QRAttendanceSessionSerializer, QRAttendanceRecordSerializer, MentorStudentAssignmentSerializer,
     StudentAcademicRecordSerializer, MentorAttendanceRecordSerializer,
     CounsellingNoteSerializer, StudentBehaviourSerializer, StudentCareerSerializer,
-    StudentLinkSerializer, StudentTrainingSerializer,
+    StudentLinkSerializer, StudentTrainingSerializer, PermissionSerializer,
+    RolePermissionSerializer, UserPermissionSerializer, TabAccessSerializer,
 )
+
+
+# ==================== PERMISSION CHECKING UTILITIES ====================
+
+def has_permission(user, permission_name):
+    """Check if user has a specific permission."""
+    # Admin and superuser have all permissions
+    if user.role == 'admin' or user.is_superuser:
+        return True
+    
+    # Check role-based permissions
+    try:
+        role_permission = RolePermission.objects.get(
+            role=user.role,
+            permission__name=permission_name,
+            can_access=True
+        )
+        # Check if user has a custom override
+        user_permission = UserPermission.objects.filter(
+            user=user,
+            permission__name=permission_name
+        ).first()
+        
+        if user_permission:
+            return user_permission.can_access
+        
+        return role_permission.can_access
+    except RolePermission.DoesNotExist:
+        # Check if user has a custom permission even without role permission
+        user_permission = UserPermission.objects.filter(
+            user=user,
+            permission__name=permission_name,
+            can_access=True
+        ).first()
+        return user_permission is not None
+
+
+def has_tab_access(user, tab_name):
+    """Check if user has access to a specific tab."""
+    # Admin and superuser have access to all tabs
+    if user.role == 'admin' or user.is_superuser:
+        return True
+    
+    try:
+        tab_access = TabAccess.objects.get(
+            role=user.role,
+            tab=tab_name,
+            can_access=True
+        )
+        return tab_access.can_access
+    except TabAccess.DoesNotExist:
+        return False
+
+
+def get_user_permissions(user):
+    """Get all permissions for a user (role + custom)."""
+    # Admin and superuser have all permissions
+    if user.role == 'admin' or user.is_superuser:
+        all_permissions = Permission.objects.all()
+        return set(p.name for p in all_permissions)
+    
+    # Get role-based permissions
+    role_permissions = RolePermission.objects.filter(
+        role=user.role,
+        can_access=True
+    )
+    permission_names = set(rp.permission.name for rp in role_permissions)
+    
+    # Apply custom user permissions (overrides)
+    user_permissions = UserPermission.objects.filter(user=user)
+    for up in user_permissions:
+        if up.can_access:
+            permission_names.add(up.permission.name)
+        else:
+            permission_names.discard(up.permission.name)
+    
+    return permission_names
+
+
+def get_user_tabs(user):
+    """Get all accessible tabs for a user."""
+    # Admin and superuser have access to all tabs
+    if user.role == 'admin' or user.is_superuser:
+        all_tabs = TabAccess.objects.values_list('tab', flat=True).distinct()
+        return set(all_tabs)
+    
+    # Get role-based tab access
+    tab_access = TabAccess.objects.filter(
+        role=user.role,
+        can_access=True
+    )
+    return set(ta.tab for ta in tab_access)
 
 
 def _sections_list_to_csv(secs) -> str:
@@ -2705,6 +2798,17 @@ def mentor_students_view(request, mentor_id=None):
     students = []
     for assignment in assignments:
         student = assignment.student
+        
+        # Get latest attendance record for this student
+        latest_attendance = MentorAttendanceRecord.objects.filter(
+            student=student,
+            mentor=target_mentor
+        ).order_by('-created_at').first()
+        
+        attendance_percentage = None
+        if latest_attendance:
+            attendance_percentage = latest_attendance.attendance_percentage
+        
         students.append({
             'id': student.id,
             'username': student.username,
@@ -2718,6 +2822,7 @@ def mentor_students_view(request, mentor_id=None):
             'is_detained': student.is_detained,
             'assignment_notes': assignment.notes,
             'assigned_at': assignment.assigned_at,
+            'attendance_percentage': attendance_percentage,
             # Personal Details
             'date_of_birth': student.date_of_birth,
             'date_of_joining': student.date_of_joining,
@@ -3698,3 +3803,346 @@ def student_training_record_detail_view(request, student_id, record_id):
         
         record.delete()
         return Response(status=204)
+
+
+# ==================== PERMISSION MANAGEMENT ENDPOINTS ====================
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def permissions_view(request):
+    """Get all permissions or create new permission (admin only)."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+    
+    if request.method == 'GET':
+        permissions = Permission.objects.all()
+        serializer = PermissionSerializer(permissions, many=True)
+        return Response(serializer.data)
+    
+    elif request.method == 'POST':
+        serializer = PermissionSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def permission_detail_view(request, permission_id):
+    """Get, update or delete specific permission (admin only)."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+    
+    try:
+        permission = Permission.objects.get(id=permission_id)
+    except Permission.DoesNotExist:
+        return Response({"detail": "Permission not found."}, status=404)
+    
+    if request.method == 'GET':
+        serializer = PermissionSerializer(permission)
+        return Response(serializer.data)
+    
+    elif request.method == 'PUT':
+        serializer = PermissionSerializer(permission, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+    
+    elif request.method == 'DELETE':
+        permission.delete()
+        return Response({"detail": "Permission deleted successfully."}, status=200)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def role_permissions_view(request):
+    """Get all role permissions or assign permissions to roles (admin only)."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+    
+    if request.method == 'GET':
+        role = request.query_params.get('role', '')
+        if role:
+            role_permissions = RolePermission.objects.filter(role=role)
+        else:
+            role_permissions = RolePermission.objects.all()
+        serializer = RolePermissionSerializer(role_permissions, many=True)
+        return Response(serializer.data)
+    
+    elif request.method == 'POST':
+        serializer = RolePermissionSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def role_permission_detail_view(request, role_permission_id):
+    """Get, update or delete specific role permission (admin only)."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+    
+    try:
+        role_permission = RolePermission.objects.get(id=role_permission_id)
+    except RolePermission.DoesNotExist:
+        return Response({"detail": "Role permission not found."}, status=404)
+    
+    if request.method == 'GET':
+        serializer = RolePermissionSerializer(role_permission)
+        return Response(serializer.data)
+    
+    elif request.method == 'PUT':
+        serializer = RolePermissionSerializer(role_permission, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+    
+    elif request.method == 'DELETE':
+        role_permission.delete()
+        return Response({"detail": "Role permission deleted successfully."}, status=200)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def user_permissions_view(request):
+    """Get all user permissions or assign custom permissions to users (admin only)."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+    
+    if request.method == 'GET':
+        user_id = request.query_params.get('user_id', '')
+        if user_id:
+            user_permissions = UserPermission.objects.filter(user_id=user_id)
+        else:
+            user_permissions = UserPermission.objects.all()
+        serializer = UserPermissionSerializer(user_permissions, many=True)
+        return Response(serializer.data)
+    
+    elif request.method == 'POST':
+        serializer = UserPermissionSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def user_permission_detail_view(request, user_permission_id):
+    """Get, update or delete specific user permission (admin only)."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+    
+    try:
+        user_permission = UserPermission.objects.get(id=user_permission_id)
+    except UserPermission.DoesNotExist:
+        return Response({"detail": "User permission not found."}, status=404)
+    
+    if request.method == 'GET':
+        serializer = UserPermissionSerializer(user_permission)
+        return Response(serializer.data)
+    
+    elif request.method == 'PUT':
+        serializer = UserPermissionSerializer(user_permission, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+    
+    elif request.method == 'DELETE':
+        user_permission.delete()
+        return Response({"detail": "User permission deleted successfully."}, status=200)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def tab_access_view(request):
+    """Get all tab access settings or create new tab access (admin only)."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+    
+    if request.method == 'GET':
+        role = request.query_params.get('role', '')
+        if role:
+            tab_access = TabAccess.objects.filter(role=role)
+        else:
+            tab_access = TabAccess.objects.all()
+        serializer = TabAccessSerializer(tab_access, many=True)
+        return Response(serializer.data)
+    
+    elif request.method == 'POST':
+        serializer = TabAccessSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def tab_access_detail_view(request, tab_access_id):
+    """Get, update or delete specific tab access (admin only)."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+    
+    try:
+        tab_access = TabAccess.objects.get(id=tab_access_id)
+    except TabAccess.DoesNotExist:
+        return Response({"detail": "Tab access not found."}, status=404)
+    
+    if request.method == 'GET':
+        serializer = TabAccessSerializer(tab_access)
+        return Response(serializer.data)
+    
+    elif request.method == 'PUT':
+        serializer = TabAccessSerializer(tab_access, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+    
+    elif request.method == 'DELETE':
+        tab_access.delete()
+        return Response({"detail": "Tab access deleted successfully."}, status=200)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def user_permissions_summary_view(request):
+    """Get permission summary for current user (for frontend UI)."""
+    user = request.user
+    
+    # Get user's role-based permissions
+    role_permissions = RolePermission.objects.filter(role=user.role, can_access=True)
+    role_permission_names = set(rp.permission.name for rp in role_permissions)
+    
+    # Get user's custom permissions (overrides)
+    user_permissions = UserPermission.objects.filter(user=user)
+    for up in user_permissions:
+        if up.can_access:
+            role_permission_names.add(up.permission.name)
+        else:
+            role_permission_names.discard(up.permission.name)
+    
+    # Get tab access for user's role
+    tab_access = TabAccess.objects.filter(role=user.role, can_access=True)
+    accessible_tabs = set(ta.tab for ta in tab_access)
+    
+    return Response({
+        'role': user.role,
+        'permissions': list(role_permission_names),
+        'accessible_tabs': list(accessible_tabs)
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def initialize_default_permissions_view(request):
+    """Initialize default permissions for all roles (admin only)."""
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    
+    if not is_admin:
+        return Response({"detail": "Admin only."}, status=403)
+    
+    # Define default permissions for each role
+    default_permissions = {
+        'admin': [
+            # Admin has all permissions
+            'attendance.view', 'attendance.create', 'attendance.update', 'attendance.delete',
+            'students.view', 'students.create', 'students.update', 'students.delete',
+            'mentorship.view', 'mentorship.create', 'mentorship.update', 'mentorship.delete',
+            'reports.view', 'reports.create', 'reports.update', 'reports.delete',
+            'settings.view', 'settings.update',
+        ],
+        'faculty': [
+            'attendance.view', 'attendance.create', 'attendance.update',
+            'students.view',
+            'faculty_portal.view', 'faculty_portal.create',
+        ],
+        'mentor': [
+            'students.view',
+            'mentorship.view', 'mentorship.create', 'mentorship.update',
+            'mentor_dashboard.view',
+        ],
+        'student': [
+            'attendance.view',
+            'student_portal.view',
+        ],
+        'hod': [
+            'attendance.view', 'students.view', 'mentorship.view', 'reports.view',
+        ]
+    }
+    
+    # Define default tab access for each role
+    default_tab_access = {
+        'admin': ['dashboard', 'attendance', 'students', 'mentorship', 'reports', 'settings', 'admin_panel'],
+        'faculty': ['dashboard', 'attendance', 'faculty_portal'],
+        'mentor': ['dashboard', 'students', 'mentorship', 'mentor_dashboard'],
+        'student': ['dashboard', 'attendance', 'student_portal'],
+        'hod': ['dashboard', 'attendance', 'students', 'mentorship', 'reports'],
+    }
+    
+    created_count = 0
+    
+    # Create permissions if they don't exist
+    all_permissions = []
+    for role, perm_names in default_permissions.items():
+        for perm_name in perm_names:
+            parts = perm_name.split('.')
+            if len(parts) == 2:
+                module, perm_type = parts
+                permission, created = Permission.objects.get_or_create(
+                    name=perm_name,
+                    defaults={
+                        'display_name': f"{module.capitalize()} {perm_type.capitalize()}",
+                        'description': f"{perm_type.capitalize()} permission for {module}",
+                        'permission_type': perm_type,
+                        'module': module
+                    }
+                )
+                if created:
+                    created_count += 1
+                all_permissions.append((role, permission))
+    
+    # Create role permissions
+    for role, permission in all_permissions:
+        RolePermission.objects.get_or_create(
+            role=role,
+            permission=permission,
+            defaults={'can_access': True}
+        )
+    
+    # Create tab access
+    for role, tabs in default_tab_access.items():
+        for tab in tabs:
+            TabAccess.objects.get_or_create(
+                role=role,
+                tab=tab,
+                defaults={'can_access': True}
+            )
+    
+    return Response({
+        "detail": f"Default permissions initialized. Created {created_count} new permissions.",
+        "roles_configured": list(default_permissions.keys())
+    })

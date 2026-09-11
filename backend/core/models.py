@@ -41,6 +41,7 @@ class User(AbstractUser):
         ('faculty', 'Faculty'),
         ('admin', 'Admin'),
         ('mentor', 'Mentor'),
+        ('hod', 'HOD'),
     )
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
 
@@ -520,3 +521,96 @@ class StudentTraining(models.Model):
 
     def __str__(self):
         return f"{self.student.full_name or self.student.username} - {self.training_name}"
+
+
+class Permission(models.Model):
+    """Model to store individual permissions."""
+    PERMISSION_TYPES = (
+        ('view', 'View'),
+        ('create', 'Create'),
+        ('update', 'Update'),
+        ('delete', 'Delete'),
+    )
+    
+    name = models.CharField(max_length=100, unique=True, help_text='Permission name (e.g., attendance.view)')
+    display_name = models.CharField(max_length=150, help_text='Human-readable permission name')
+    description = models.TextField(blank=True, help_text='Description of what this permission allows')
+    permission_type = models.CharField(max_length=20, choices=PERMISSION_TYPES, help_text='Type of permission')
+    module = models.CharField(max_length=50, help_text='Module this permission belongs to (e.g., attendance, students, mentorship)')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Permission'
+        verbose_name_plural = 'Permissions'
+        ordering = ['module', 'name']
+
+    def __str__(self):
+        return f"{self.display_name} ({self.name})"
+
+
+class RolePermission(models.Model):
+    """Model to store permissions assigned to roles."""
+    role = models.CharField(max_length=20, help_text='Role name (student, faculty, admin, mentor, hod)')
+    permission = models.ForeignKey(Permission, on_delete=models.CASCADE, related_name='role_permissions')
+    can_access = models.BooleanField(default=True, help_text='Whether this role has this permission')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Role Permission'
+        verbose_name_plural = 'Role Permissions'
+        unique_together = [['role', 'permission']]
+        ordering = ['role', 'permission__module', 'permission__name']
+
+    def __str__(self):
+        return f"{self.role} - {self.permission.display_name} ({'Granted' if self.can_access else 'Denied'})"
+
+
+class UserPermission(models.Model):
+    """Model to store custom permissions for individual users (overrides role permissions)."""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='custom_permissions')
+    permission = models.ForeignKey(Permission, on_delete=models.CASCADE, related_name='user_permissions')
+    can_access = models.BooleanField(default=True, help_text='Whether this user has this permission')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'User Permission'
+        verbose_name_plural = 'User Permissions'
+        unique_together = [['user', 'permission']]
+        ordering = ['user__username', 'permission__module', 'permission__name']
+
+    def __str__(self):
+        return f"{self.user.username} - {self.permission.display_name} ({'Granted' if self.can_access else 'Denied'})"
+
+
+class TabAccess(models.Model):
+    """Model to control which tabs/sections users can access."""
+    TAB_CHOICES = (
+        ('dashboard', 'Dashboard'),
+        ('attendance', 'Attendance'),
+        ('students', 'Students'),
+        ('mentorship', 'Mentorship'),
+        ('reports', 'Reports'),
+        ('settings', 'Settings'),
+        ('faculty_portal', 'Faculty Portal'),
+        ('student_portal', 'Student Portal'),
+        ('mentor_dashboard', 'Mentor Dashboard'),
+        ('admin_panel', 'Admin Panel'),
+    )
+    
+    role = models.CharField(max_length=20, help_text='Role name')
+    tab = models.CharField(max_length=50, choices=TAB_CHOICES, help_text='Tab/section name')
+    can_access = models.BooleanField(default=True, help_text='Whether this role can access this tab')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Tab Access'
+        verbose_name_plural = 'Tab Access'
+        unique_together = [['role', 'tab']]
+        ordering = ['role', 'tab']
+
+    def __str__(self):
+        return f"{self.role} - {self.tab} ({'Accessible' if self.can_access else 'Restricted'})"

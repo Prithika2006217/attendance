@@ -48,6 +48,16 @@ from .views import (
     student_link_record_detail_view,
     student_training_records_view,
     student_training_record_detail_view,
+    permissions_view,
+    permission_detail_view,
+    role_permissions_view,
+    role_permission_detail_view,
+    user_permissions_view,
+    user_permission_detail_view,
+    tab_access_view,
+    tab_access_detail_view,
+    user_permissions_summary_view,
+    initialize_default_permissions_view,
 )
 
 urlpatterns = [
@@ -102,4 +112,15 @@ urlpatterns = [
     path('students/<int:student_id>/link-records/<int:record_id>/', student_link_record_detail_view),
     path('students/<int:student_id>/training-records/', student_training_records_view),
     path('students/<int:student_id>/training-records/<int:record_id>/', student_training_record_detail_view),
+    # Permission management endpoints
+    path('permissions/', permissions_view),
+    path('permissions/<int:permission_id>/', permission_detail_view),
+    path('role-permissions/', role_permissions_view),
+    path('role-permissions/<int:role_permission_id>/', role_permission_detail_view),
+    path('user-permissions/', user_permissions_view),
+    path('user-permissions/<int:user_permission_id>/', user_permission_detail_view),
+    path('tab-access/', tab_access_view),
+    path('tab-access/<int:tab_access_id>/', tab_access_detail_view),
+    path('user-permissions-summary/', user_permissions_summary_view),
+    path('initialize-default-permissions/', initialize_default_permissions_view),
 ]
