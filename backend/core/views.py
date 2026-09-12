@@ -2970,10 +2970,199 @@ def student_academic_record_detail_view(request, student_id, record_id):
         return Response(serializer.errors, status=400)
 
     elif request.method == 'DELETE':
-        if not is_admin:
-            return Response({"detail": "Only admin can delete academic records."}, status=403)
+        # If mentor, verify they created this record
+        if is_mentor and record.updated_by != request.user:
+            return Response({"detail": "You can only delete academic records you created."}, status=403)
+        
         record.delete()
         return Response(status=204)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def bulk_upload_academic_records_view(request):
+    """Bulk upload academic records from Excel file."""
+    is_mentor = request.user.role == 'mentor'
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+
+    if not is_mentor and not is_admin:
+        return Response({"detail": "Only mentors and admins can bulk upload academic records."}, status=403)
+
+    if 'file' not in request.FILES or 'student_id' not in request.data:
+        return Response({"detail": "File and student_id are required."}, status=400)
+
+    file = request.FILES['file']
+    student_id = request.data.get('student_id')
+
+    try:
+        student = User.objects.get(id=student_id, role='student')
+    except User.DoesNotExist:
+        return Response({"detail": "Student not found."}, status=404)
+
+    # Verify mentor assignment
+    if is_mentor:
+        if not MentorStudentAssignment.objects.filter(mentor=request.user, student=student).exists():
+            return Response({"detail": "You are not assigned to this student."}, status=403)
+
+    try:
+        # Load the Excel file
+        workbook = load_workbook(file)
+        sheet = workbook.active
+
+        # Expected columns (case-insensitive)
+        expected_columns = {
+            'course_name': 'Course Name',
+            'semester': 'Semester', 
+            'academic_year': 'Academic Year',
+            'mid1_marks': 'Mid-1 Marks',
+            'mid2_marks': 'Mid-2 Marks',
+            'cie_marks': 'CIE Marks',
+            'total_internal_marks': 'Total Internal Marks',
+            'marks_obtained': 'Marks Obtained',
+            'credits_obtained': 'Credits Obtained',
+            'sgpa': 'SGPA',
+            'audit_course_cleared': 'Audit Course Cleared',
+            'grade': 'Grade',
+            'remarks': 'Remarks'
+        }
+
+        # Create a mapping of column names to indices
+        header_row = sheet[1]
+        column_mapping = {}
+        for idx, cell in enumerate(header_row):
+            if cell.value:
+                cell_value = str(cell.value).strip().lower()
+                for key, expected_name in expected_columns.items():
+                    if cell_value == expected_name.lower():
+                        column_mapping[key] = idx
+                        break
+
+        # Validate that required columns are present
+        required_columns = ['course_name', 'semester', 'academic_year']
+        missing_columns = [col for col in required_columns if col not in column_mapping]
+        if missing_columns:
+            return Response({
+                "detail": f"Missing required columns: {', '.join([expected_columns[col] for col in missing_columns])}"
+            }, status=400)
+
+        # Get available subjects for validation
+        available_subjects = Subject.objects.filter(
+            departments__name=student.department,
+            year=student.year
+        ).values_list('name', flat=True)
+
+        # Valid semester values
+        valid_semesters = ['1-1', '1-2', '2-1', '2-2', '3-1', '3-2', '4-1', '4-2']
+
+        successful_count = 0
+        failed_count = 0
+        errors = []
+
+        # Process each row (starting from row 2, skipping header)
+        for row_idx, row in enumerate(sheet.iter_rows(min_row=2), start=2):
+            try:
+                # Extract values based on column mapping
+                def get_cell_value(key):
+                    if key in column_mapping:
+                        cell = row[column_mapping[key]]
+                        return cell.value if cell.value is not None else ''
+                    return ''
+
+                course_name = str(get_cell_value('course_name')).strip()
+                semester = str(get_cell_value('semester')).strip()
+                academic_year = str(get_cell_value('academic_year')).strip()
+
+                # Skip empty rows
+                if not course_name and not semester and not academic_year:
+                    continue
+
+                # Validate required fields
+                if not course_name:
+                    errors.append(f"Row {row_idx}: Course Name is required")
+                    failed_count += 1
+                    continue
+
+                if not semester:
+                    errors.append(f"Row {row_idx}: Semester is required")
+                    failed_count += 1
+                    continue
+
+                if not academic_year:
+                    errors.append(f"Row {row_idx}: Academic Year is required")
+                    failed_count += 1
+                    continue
+
+                # Validate semester format
+                if semester not in valid_semesters:
+                    errors.append(f"Row {row_idx}: Invalid semester '{semester}'. Must be one of: {', '.join(valid_semesters)}")
+                    failed_count += 1
+                    continue
+
+                # Validate course name against available subjects
+                if available_subjects.exists() and course_name not in available_subjects:
+                    errors.append(f"Row {row_idx}: Course '{course_name}' is not valid for {student.department} - Year {student.year}")
+                    failed_count += 1
+                    continue
+
+                # Parse numeric fields
+                def parse_numeric(key):
+                    value = get_cell_value(key)
+                    if value:
+                        try:
+                            return float(value)
+                        except (ValueError, TypeError):
+                            return None
+                    return None
+
+                mid1_marks = parse_numeric('mid1_marks')
+                mid2_marks = parse_numeric('mid2_marks')
+                cie_marks = parse_numeric('cie_marks')
+                total_internal_marks = parse_numeric('total_internal_marks')
+                marks_obtained = parse_numeric('marks_obtained')
+                credits_obtained = parse_numeric('credits_obtained')
+                sgpa = parse_numeric('sgpa')
+
+                # Parse boolean field
+                audit_value = get_cell_value('audit_course_cleared').strip().upper()
+                audit_course_cleared = audit_value in ['TRUE', 'YES', '1', 'T', 'Y']
+
+                # Get optional fields
+                grade = str(get_cell_value('grade')).strip() or None
+                remarks = str(get_cell_value('remarks')).strip() or None
+
+                # Create the academic record
+                academic_record = StudentAcademicRecord.objects.create(
+                    student=student,
+                    course_name=course_name,
+                    semester=semester,
+                    academic_year=academic_year,
+                    mid1_marks=mid1_marks,
+                    mid2_marks=mid2_marks,
+                    cie_marks=cie_marks,
+                    total_internal_marks=total_internal_marks,
+                    marks_obtained=marks_obtained,
+                    credits_obtained=credits_obtained,
+                    sgpa=sgpa,
+                    audit_course_cleared=audit_course_cleared,
+                    grade=grade,
+                    remarks=remarks,
+                    updated_by=request.user
+                )
+
+                successful_count += 1
+
+            except Exception as e:
+                errors.append(f"Row {row_idx}: {str(e)}")
+                failed_count += 1
+
+        return Response({
+            "successful_count": successful_count,
+            "failed_count": failed_count,
+            "errors": errors[:10]  # Return first 10 errors to avoid huge response
+        }, status=200)
+
+    except Exception as e:
+        return Response({"detail": f"Error processing file: {str(e)}"}, status=500)
 
 
 @api_view(['GET', 'POST'])
@@ -3016,7 +3205,6 @@ def mentor_attendance_records_view(request, student_id):
         
         data = request.data.copy()
         data['student'] = student_id
-        data['mentor'] = request.user.id
         
         # If date range is provided, calculate attendance from regular attendance records
         if 'from_date' in data and 'to_date' in data:
@@ -3056,7 +3244,7 @@ def mentor_attendance_records_view(request, student_id):
                 else:
                     data['attendance_percentage'] = 0
         
-        serializer = MentorAttendanceRecordSerializer(data=data)
+        serializer = MentorAttendanceRecordSerializer(data=data, context={'request': request})
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data, status=201)
@@ -3207,15 +3395,20 @@ def mentor_attendance_record_detail_view(request, student_id, record_id):
                 else:
                     data['attendance_percentage'] = 0
         
-        serializer = MentorAttendanceRecordSerializer(record, data=data, partial=True)
+        serializer = MentorAttendanceRecordSerializer(record, data=data, partial=True, context={'request': request})
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=400)
 
     elif request.method == 'DELETE':
-        if not is_admin:
-            return Response({"detail": "Only admin can delete attendance records."}, status=403)
+        if not is_mentor and not is_admin:
+            return Response({"detail": "Only mentors and admins can delete attendance records."}, status=403)
+        
+        # If mentor, verify they created this record
+        if is_mentor and record.mentor != request.user:
+            return Response({"detail": "You can only delete attendance records you created."}, status=403)
+        
         record.delete()
         return Response(status=204)
 

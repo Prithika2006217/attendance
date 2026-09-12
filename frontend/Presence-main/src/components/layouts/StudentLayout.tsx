@@ -1312,7 +1312,7 @@ export const StudentLayout: React.FC = () => {
                     </div>
                     {apiAttendance?.total_hours != null && apiAttendance.total_hours > 0 && (
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        {(apiAttendance.total_attended_hours ?? 0).toFixed(1)} / {apiAttendance.total_hours.toFixed(1)} hours
+                        {Number(apiAttendance.total_attended_hours ?? 0).toFixed(1)} / {Number(apiAttendance.total_hours).toFixed(1)} hours
                       </p>
                     )}
                   </div>
@@ -1379,8 +1379,8 @@ export const StudentLayout: React.FC = () => {
                     {apiAttendance?.total_hours != null && apiAttendance.total_hours > 0 && (
                       <>
                         {' '}
-                        · {(apiAttendance.total_attended_hours ?? 0).toFixed(1)} /{' '}
-                        {apiAttendance.total_hours.toFixed(1)} hours · {overallDateMetrics.attendedDays}{' '}
+                        · {Number(apiAttendance.total_attended_hours ?? 0).toFixed(1)} /{' '}
+                        {Number(apiAttendance.total_hours).toFixed(1)} hours · {overallDateMetrics.attendedDays}{' '}
                         / {overallDateMetrics.totalDays} days
                       </>
                     )}
@@ -1664,7 +1664,7 @@ export const StudentLayout: React.FC = () => {
                           <div className="text-sm text-muted-foreground">
                             {item.present} / {item.total} classes
                             {(item as { totalHours?: number }).totalHours != null && (item as { totalHours?: number }).totalHours > 0 && (
-                              <> · {(item as { attendedHours?: number }).attendedHours?.toFixed(1) ?? '0'} / {(item as { totalHours?: number }).totalHours?.toFixed(1)} hours</>
+                              <> · {Number((item as { attendedHours?: number }).attendedHours ?? 0).toFixed(1)} / {Number((item as { totalHours?: number }).totalHours ?? 0).toFixed(1)} hours</>
                             )}
                           </div>
                         </div>
@@ -1740,7 +1740,7 @@ export const StudentLayout: React.FC = () => {
                                       : 'bg-red-100 text-red-800'
                                 }
                               >
-                                {record.attendance_percentage.toFixed(2)}%
+                                {Number(record.attendance_percentage).toFixed(2)}%
                               </Badge>
                             </div>
                             <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
@@ -1754,7 +1754,7 @@ export const StudentLayout: React.FC = () => {
                               </div>
                               <div>
                                 <span className="text-gray-600">Attendance %:</span>
-                                <span className="ml-1 font-medium">{record.attendance_percentage.toFixed(2)}%</span>
+                                <span className="ml-1 font-medium">{Number(record.attendance_percentage).toFixed(2)}%</span>
                               </div>
                             </div>
                             {record.remarks && (

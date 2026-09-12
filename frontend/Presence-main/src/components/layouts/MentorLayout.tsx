@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { apiUrl, authFetch } from '@/lib/api';
+import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -38,6 +39,8 @@ import {
   TrendingUp,
   Star,
   Brain,
+  Upload,
+  Download,
 } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { format, parseISO } from 'date-fns';
@@ -305,6 +308,9 @@ export const MentorLayout: React.FC = () => {
     grade: '',
     remarks: '',
   });
+  const [bulkUploadDialogOpen, setBulkUploadDialogOpen] = useState(false);
+  const [bulkUploadFile, setBulkUploadFile] = useState<File | null>(null);
+  const [bulkUploadLoading, setBulkUploadLoading] = useState(false);
   const [mentorAttendanceRecords, setMentorAttendanceRecords] = useState<MentorAttendanceRecord[]>([]);
   const [mentorAttendanceLoading, setMentorAttendanceLoading] = useState(false);
   const [mentorAttendanceDialogOpen, setMentorAttendanceDialogOpen] = useState(false);
@@ -1508,9 +1514,11 @@ export const MentorLayout: React.FC = () => {
         });
         loadAcademicRecords(selectedStudent.id);
       } else {
+        const errorData = await res.json();
+        console.error('Delete error response:', errorData);
         toast({
           title: 'Error',
-          description: 'Failed to delete academic record.',
+          description: errorData.detail || 'Failed to delete academic record.',
           variant: 'destructive'
         });
       }
@@ -1520,6 +1528,71 @@ export const MentorLayout: React.FC = () => {
         description: 'Network error occurred.',
         variant: 'destructive'
       });
+    }
+  };
+
+  const handleBulkUploadAcademicRecords = () => {
+    if (!selectedStudent) return;
+    setBulkUploadDialogOpen(true);
+    setBulkUploadFile(null);
+  };
+
+  const handleDownloadSampleExcel = () => {
+    const sampleData = [
+      ['Course Name', 'Semester', 'Academic Year', 'Mid-1 Marks', 'Mid-2 Marks', 'CIE Marks', 'Total Internal Marks', 'Marks Obtained', 'Credits Obtained', 'SGPA', 'Audit Course Cleared', 'Grade', 'Remarks'],
+      ['Mathematics', '1-1', '2023-24', '15', '18', '25', '30', '45', '3', '8.5', 'TRUE', 'A+', 'Good performance'],
+      ['Physics', '1-1', '2023-24', '12', '16', '22', '28', '40', '4', '7.8', 'FALSE', 'A', 'Can improve'],
+      ['Programming', '1-2', '2023-24', '', '', '', '', '', '', '', '', '', ''],
+    ];
+
+    const ws = XLSX.utils.aoa_to_sheet(sampleData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Academic Records');
+    XLSX.writeFile(wb, 'academic_records_sample.xlsx');
+  };
+
+  const handleBulkUploadSubmit = async () => {
+    if (!selectedStudent || !bulkUploadFile) return;
+
+    setBulkUploadLoading(true);
+
+    const formData = new FormData();
+    formData.append('file', bulkUploadFile);
+    formData.append('student_id', selectedStudent.id.toString());
+
+    try {
+      const res = await authFetch(
+        apiUrl('/api/bulk-upload-academic-records/'),
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
+
+      if (res.ok) {
+        const data = await res.json();
+        toast({
+          title: 'Success',
+          description: `Successfully uploaded ${data.successful_count} academic records. ${data.failed_count} records failed.`,
+        });
+        setBulkUploadDialogOpen(false);
+        loadAcademicRecords(selectedStudent.id);
+      } else {
+        const errorData = await res.json();
+        toast({
+          title: 'Error',
+          description: errorData.detail || 'Failed to upload academic records.',
+          variant: 'destructive'
+        });
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Network error occurred.',
+        variant: 'destructive'
+      });
+    } finally {
+      setBulkUploadLoading(false);
     }
   };
 
@@ -1623,6 +1696,24 @@ export const MentorLayout: React.FC = () => {
   const handleSaveMentorAttendance = async () => {
     if (!selectedStudent) return;
 
+    if (!mentorAttendanceForm.semester) {
+      toast({
+        title: 'Semester Required',
+        description: 'Please select a semester.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    if (!mentorAttendanceForm.from_date || !mentorAttendanceForm.to_date) {
+      toast({
+        title: 'Date Range Required',
+        description: 'Please select both from date and to date.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
     if (!mentorAttendanceForm.calculated_attendance) {
       toast({
         title: 'Attendance Required',
@@ -1641,6 +1732,8 @@ export const MentorLayout: React.FC = () => {
       attendance_percentage: mentorAttendanceForm.calculated_attendance.attendance_percentage,
       remarks: mentorAttendanceForm.remarks,
     };
+
+    console.log('Saving mentor attendance with payload:', payload);
 
     try {
       let res;
@@ -1673,9 +1766,22 @@ export const MentorLayout: React.FC = () => {
         loadMentorAttendance(selectedStudent.id);
       } else {
         const errorData = await res.json();
+        console.error('Backend error response:', errorData);
+        let errorMessage = 'Failed to save attendance record.';
+        if (errorData.detail) {
+          errorMessage = errorData.detail;
+        } else if (errorData.semester) {
+          errorMessage = `Semester: ${errorData.semester.join(', ')}`;
+        } else if (errorData.from_date) {
+          errorMessage = `From date: ${errorData.from_date.join(', ')}`;
+        } else if (errorData.to_date) {
+          errorMessage = `To date: ${errorData.to_date.join(', ')}`;
+        } else if (errorData.non_field_errors) {
+          errorMessage = errorData.non_field_errors.join(', ');
+        }
         toast({
           title: 'Error',
-          description: errorData.detail || 'Failed to save attendance record.',
+          description: errorMessage,
           variant: 'destructive'
         });
       }
@@ -1705,9 +1811,11 @@ export const MentorLayout: React.FC = () => {
         });
         loadMentorAttendance(selectedStudent.id);
       } else {
+        const errorData = await res.json();
+        console.error('Delete error response:', errorData);
         toast({
           title: 'Error',
-          description: 'Failed to delete attendance record.',
+          description: errorData.detail || 'Failed to delete attendance record.',
           variant: 'destructive'
         });
       }
@@ -1963,7 +2071,7 @@ export const MentorLayout: React.FC = () => {
                                 Academic Records
                                 {student.overall_cgpa !== null && student.overall_cgpa !== undefined ? (
                                   <Badge className="ml-2 text-xs bg-blue-100 text-blue-800">
-                                    CGPA: {student.overall_cgpa.toFixed(2)}
+                                    CGPA: {Number(student.overall_cgpa).toFixed(2)}
                                   </Badge>
                                 ) : (
                                   <Badge className="ml-2 text-xs bg-gray-100 text-gray-600">
@@ -1989,7 +2097,7 @@ export const MentorLayout: React.FC = () => {
                                           : 'bg-red-100 text-red-800'
                                     }`}
                                   >
-                                    Overall: {student.attendance_percentage.toFixed(1)}%
+                                    Overall: {Number(student.attendance_percentage).toFixed(1)}%
                                   </Badge>
                                 ) : (
                                   <Badge className="ml-2 text-xs bg-gray-100 text-gray-600">
@@ -2196,10 +2304,20 @@ export const MentorLayout: React.FC = () => {
                       {selectedStudent.full_name || selectedStudent.username} - {selectedStudent.roll_number || 'N/A'}
                     </p>
                   </div>
-                  <Button onClick={handleAddAcademicRecord} className="bg-blue-600 hover:bg-blue-700">
-                    <Plus className="w-4 h-4 mr-2" />
-                    Add Academic Record
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button onClick={handleAddAcademicRecord} className="bg-blue-600 hover:bg-blue-700">
+                      <Plus className="w-4 h-4 mr-2" />
+                      Add Academic Record
+                    </Button>
+                    <Button onClick={handleBulkUploadAcademicRecords} variant="outline" className="bg-green-600 hover:bg-green-700 text-white border-green-600">
+                      <Upload className="w-4 h-4 mr-2" />
+                      Bulk Upload
+                    </Button>
+                    <Button onClick={handleDownloadSampleExcel} variant="outline" className="bg-purple-600 hover:bg-purple-700 text-white border-purple-600">
+                      <Download className="w-4 h-4 mr-2" />
+                      Sample Excel
+                    </Button>
+                  </div>
                 </div>
 
                 <Card>
@@ -2431,7 +2549,7 @@ export const MentorLayout: React.FC = () => {
                                           : 'bg-red-100 text-red-800'
                                     }
                                   >
-                                    {record.attendance_percentage.toFixed(2)}%
+                                    {Number(record.attendance_percentage).toFixed(2)}%
                                   </Badge>
                                 </div>
                                 <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
@@ -2445,7 +2563,7 @@ export const MentorLayout: React.FC = () => {
                                   </div>
                                   <div>
                                     <span className="text-gray-600">Attendance %:</span>
-                                    <span className="ml-1 font-medium">{record.attendance_percentage !== null ? record.attendance_percentage.toFixed(2) + '%' : 'N/A'}</span>
+                                    <span className="ml-1 font-medium">{record.attendance_percentage !== null ? Number(record.attendance_percentage).toFixed(2) + '%' : 'N/A'}</span>
                                   </div>
                                 </div>
                                 {record.remarks && (
@@ -3951,6 +4069,57 @@ export const MentorLayout: React.FC = () => {
         </DialogContent>
       </Dialog>
 
+      {/* Bulk Upload Academic Records Dialog */}
+      <Dialog open={bulkUploadDialogOpen} onOpenChange={setBulkUploadDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Bulk Upload Academic Records</DialogTitle>
+            <p className="text-sm text-gray-500 mt-1">
+              Upload academic records from Excel file for {selectedStudent?.full_name || selectedStudent?.username}
+            </p>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="bulk-file">Excel File *</Label>
+              <Input
+                id="bulk-file"
+                type="file"
+                accept=".xlsx,.xls"
+                onChange={(e) => setBulkUploadFile(e.target.files?.[0] || null)}
+                className="cursor-pointer"
+              />
+              <p className="text-xs text-muted-foreground">
+                Supported formats: .xlsx, .xls
+              </p>
+            </div>
+
+            <div className="bg-blue-50 border border-blue-200 rounded-md p-3">
+              <p className="text-sm text-blue-800 font-medium mb-2">Instructions:</p>
+              <ul className="text-xs text-blue-700 space-y-1 list-disc list-inside">
+                <li>Download the sample Excel to see the required format</li>
+                <li>Empty cells are allowed for optional fields</li>
+                <li>Course Name must match subjects for the student's branch/year</li>
+                <li>Semester must be in format: 1-1, 1-2, 2-1, 2-2, etc.</li>
+                <li>Academic Year format: 2023-24</li>
+              </ul>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-4">
+              <Button variant="outline" onClick={() => setBulkUploadDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleBulkUploadSubmit}
+                disabled={!bulkUploadFile || bulkUploadLoading}
+                className="bg-green-600 hover:bg-green-700"
+              >
+                {bulkUploadLoading ? 'Uploading...' : 'Upload Records'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Mentor Attendance Dialog */}
       <Dialog open={mentorAttendanceDialogOpen} onOpenChange={setMentorAttendanceDialogOpen}>
         <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
@@ -4029,7 +4198,7 @@ export const MentorLayout: React.FC = () => {
                   </div>
                   <div>
                     <span className="text-gray-600">Attendance %:</span>
-                    <span className="ml-2 font-semibold text-blue-900">{mentorAttendanceForm.calculated_attendance.attendance_percentage.toFixed(2)}%</span>
+                    <span className="ml-2 font-semibold text-blue-900">{Number(mentorAttendanceForm.calculated_attendance.attendance_percentage).toFixed(2)}%</span>
                   </div>
                 </div>
               </div>

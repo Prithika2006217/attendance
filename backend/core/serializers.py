@@ -626,6 +626,37 @@ class MentorAttendanceRecordSerializer(serializers.ModelSerializer):
     def get_mentor_name(self, obj):
         return obj.mentor.full_name or obj.mentor.username
 
+    def validate(self, data):
+        """Validate that the combination of student, semester, and date range is unique."""
+        # Skip validation for updates (when instance exists)
+        if self.instance:
+            return data
+
+        student = data.get('student')
+        semester = data.get('semester')
+        from_date = data.get('from_date')
+        to_date = data.get('to_date')
+
+        # Check for duplicate records only if all fields are present
+        if student and semester and from_date and to_date:
+            if MentorAttendanceRecord.objects.filter(
+                student=student,
+                semester=semester,
+                from_date=from_date,
+                to_date=to_date
+            ).exists():
+                raise serializers.ValidationError(
+                    "An attendance record for this student, semester, and date range already exists."
+                )
+        return data
+
+    def create(self, validated_data):
+        """Override create to set the mentor from the request context."""
+        # Get the mentor from the context (set in the view)
+        mentor = self.context.get('request').user
+        validated_data['mentor'] = mentor
+        return super().create(validated_data)
+
 
 class StudentAchievementSerializer(serializers.ModelSerializer):
     """Serializer for student achievements."""

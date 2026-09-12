@@ -2463,15 +2463,57 @@ export const AdminLayout: React.FC = () => {
   const loadRolePermissions = async (role: string) => {
     setCurrentRole(role);
     setCurrentUserId(null);
+    // Reset existing data
+    setRolePermissions([]);
+    setTabAccess([]);
+    setAllPermissions([]);
+    setAllTabs([]);
+    
     try {
-      const res = await authFetch(apiUrl(`/api/role-permissions/?role=${role}`));
-      if (res.ok) {
-        const data = await res.json();
+      // Load both role permissions and tab access
+      const [rolePermsRes, tabAccessRes] = await Promise.all([
+        authFetch(apiUrl(`/api/role-permissions/?role=${role}`)),
+        authFetch(apiUrl(`/api/tab-access/?role=${role}`))
+      ]);
+      
+      if (rolePermsRes.ok) {
+        const data = await rolePermsRes.json();
+        console.log('Loaded role permissions:', data);
+        console.log('Role permissions structure:', JSON.stringify(data, null, 2));
         setRolePermissions(data);
-        await loadAllPermissions();
-        setPermissionDialogOpen(true);
+      } else {
+        const errorData = await rolePermsRes.json().catch(() => ({}));
+        console.error('Failed to load role permissions:', errorData);
+        toast({ title: 'Error', description: errorData.detail || 'Failed to load role permissions', variant: 'destructive' });
       }
+      
+      if (tabAccessRes.ok) {
+        const data = await tabAccessRes.json();
+        console.log('Loaded tab access:', data);
+        console.log('Tab access structure:', JSON.stringify(data, null, 2));
+        setTabAccess(data);
+      } else {
+        const errorData = await tabAccessRes.json().catch(() => ({}));
+        console.error('Failed to load tab access:', errorData);
+        toast({ title: 'Error', description: errorData.detail || 'Failed to load tab access', variant: 'destructive' });
+      }
+      
+      await loadAllPermissions();
+      setAllTabs([
+        { value: 'dashboard', label: 'Dashboard' },
+        { value: 'attendance', label: 'Attendance' },
+        { value: 'students', label: 'Students' },
+        { value: 'mentorship', label: 'Mentorship' },
+        { value: 'reports', label: 'Reports' },
+        { value: 'settings', label: 'Settings' },
+        { value: 'faculty_portal', label: 'Faculty Portal' },
+        { value: 'student_portal', label: 'Student Portal' },
+        { value: 'mentor_dashboard', label: 'Mentor Dashboard' },
+        { value: 'admin_panel', label: 'Admin Panel' },
+      ]);
+      setPermissionDialogOpen(true);
     } catch (error) {
+      console.error('Error loading role permissions:', error);
       toast({ title: 'Error', description: 'Failed to load role permissions', variant: 'destructive' });
     }
   };
@@ -2479,6 +2521,10 @@ export const AdminLayout: React.FC = () => {
   const loadUserPermissions = async (userId: number) => {
     setCurrentUserId(userId);
     setCurrentRole(null);
+    // Reset existing data
+    setUserPermissions([]);
+    setAllPermissions([]);
+    
     try {
       const res = await authFetch(apiUrl(`/api/user-permissions/?user_id=${userId}`));
       if (res.ok) {
@@ -2486,8 +2532,12 @@ export const AdminLayout: React.FC = () => {
         setUserPermissions(data);
         await loadAllPermissions();
         setPermissionDialogOpen(true);
+      } else {
+        const errorData = await res.json().catch(() => ({}));
+        toast({ title: 'Error', description: errorData.detail || 'Failed to load user permissions', variant: 'destructive' });
       }
     } catch (error) {
+      console.error('Error loading user permissions:', error);
       toast({ title: 'Error', description: 'Failed to load user permissions', variant: 'destructive' });
     }
   };
@@ -2495,26 +2545,51 @@ export const AdminLayout: React.FC = () => {
   const loadTabAccess = async (role: string) => {
     setCurrentRole(role);
     setCurrentUserId(null);
+    // Reset existing data
+    setRolePermissions([]);
+    setTabAccess([]);
+    setAllPermissions([]);
+    setAllTabs([]);
+    
     try {
-      const res = await authFetch(apiUrl(`/api/tab-access/?role=${role}`));
-      if (res.ok) {
-        const data = await res.json();
+      // Load both tab access and role permissions
+      const [tabAccessRes, rolePermsRes] = await Promise.all([
+        authFetch(apiUrl(`/api/tab-access/?role=${role}`)),
+        authFetch(apiUrl(`/api/role-permissions/?role=${role}`))
+      ]);
+      
+      if (tabAccessRes.ok) {
+        const data = await tabAccessRes.json();
         setTabAccess(data);
-        setAllTabs([
-          { value: 'dashboard', label: 'Dashboard' },
-          { value: 'attendance', label: 'Attendance' },
-          { value: 'students', label: 'Students' },
-          { value: 'mentorship', label: 'Mentorship' },
-          { value: 'reports', label: 'Reports' },
-          { value: 'settings', label: 'Settings' },
-          { value: 'faculty_portal', label: 'Faculty Portal' },
-          { value: 'student_portal', label: 'Student Portal' },
-          { value: 'mentor_dashboard', label: 'Mentor Dashboard' },
-          { value: 'admin_panel', label: 'Admin Panel' },
-        ]);
-        setPermissionDialogOpen(true);
+      } else {
+        const errorData = await tabAccessRes.json().catch(() => ({}));
+        toast({ title: 'Error', description: errorData.detail || 'Failed to load tab access', variant: 'destructive' });
       }
+      
+      if (rolePermsRes.ok) {
+        const data = await rolePermsRes.json();
+        setRolePermissions(data);
+      } else {
+        const errorData = await rolePermsRes.json().catch(() => ({}));
+        toast({ title: 'Error', description: errorData.detail || 'Failed to load role permissions', variant: 'destructive' });
+      }
+      
+      setAllTabs([
+        { value: 'dashboard', label: 'Dashboard' },
+        { value: 'attendance', label: 'Attendance' },
+        { value: 'students', label: 'Students' },
+        { value: 'mentorship', label: 'Mentorship' },
+        { value: 'reports', label: 'Reports' },
+        { value: 'settings', label: 'Settings' },
+        { value: 'faculty_portal', label: 'Faculty Portal' },
+        { value: 'student_portal', label: 'Student Portal' },
+        { value: 'mentor_dashboard', label: 'Mentor Dashboard' },
+        { value: 'admin_panel', label: 'Admin Panel' },
+      ]);
+      await loadAllPermissions();
+      setPermissionDialogOpen(true);
     } catch (error) {
+      console.error('Error loading tab access:', error);
       toast({ title: 'Error', description: 'Failed to load tab access', variant: 'destructive' });
     }
   };
@@ -2541,16 +2616,28 @@ export const AdminLayout: React.FC = () => {
       if (existing) {
         const res = await authFetch(apiUrl(`/api/role-permissions/${existing.id}/`), {
           method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
           body: JSON.stringify({ can_access: canAccess })
         });
         if (res.ok) {
           const updated = await res.json();
+          console.log('Updated role permission:', updated);
+          console.log('Updated role permission structure:', JSON.stringify(updated, null, 2));
           setRolePermissions(prev => prev.map((rp: any) => rp.id === existing.id ? updated : rp));
           toast({ title: 'Success', description: 'Permission updated' });
+        } else {
+          const errorData = await res.json().catch(() => ({}));
+          console.error('Failed to update role permission:', errorData);
+          toast({ title: 'Error', description: errorData.detail || 'Failed to update permission', variant: 'destructive' });
         }
       } else {
         const res = await authFetch(apiUrl('/api/role-permissions/'), {
           method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
           body: JSON.stringify({
             role: currentRole,
             permission: permissionId,
@@ -2559,12 +2646,24 @@ export const AdminLayout: React.FC = () => {
         });
         if (res.ok) {
           const created = await res.json();
+          console.log('Created role permission:', created);
           setRolePermissions(prev => [...prev, created]);
           toast({ title: 'Success', description: 'Permission added' });
+        } else {
+          const errorData = await res.json().catch(() => ({}));
+          console.error('Failed to create role permission:', errorData);
+          toast({ title: 'Error', description: errorData.detail || 'Failed to add permission', variant: 'destructive' });
         }
       }
     } catch (error) {
+      console.error('Error saving role permission:', error);
       toast({ title: 'Error', description: 'Failed to save permission', variant: 'destructive' });
+    }
+  };
+
+  const refreshRolePermissions = async () => {
+    if (currentRole) {
+      await loadRolePermissions(currentRole);
     }
   };
 
@@ -2574,16 +2673,25 @@ export const AdminLayout: React.FC = () => {
       if (existing) {
         const res = await authFetch(apiUrl(`/api/user-permissions/${existing.id}/`), {
           method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
           body: JSON.stringify({ can_access: canAccess })
         });
         if (res.ok) {
           const updated = await res.json();
           setUserPermissions(prev => prev.map((up: any) => up.id === existing.id ? updated : up));
           toast({ title: 'Success', description: 'Permission updated' });
+        } else {
+          const errorData = await res.json().catch(() => ({}));
+          toast({ title: 'Error', description: errorData.detail || 'Failed to update permission', variant: 'destructive' });
         }
       } else {
         const res = await authFetch(apiUrl('/api/user-permissions/'), {
           method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
           body: JSON.stringify({
             user: currentUserId,
             permission: permissionId,
@@ -2594,9 +2702,13 @@ export const AdminLayout: React.FC = () => {
           const created = await res.json();
           setUserPermissions(prev => [...prev, created]);
           toast({ title: 'Success', description: 'Permission added' });
+        } else {
+          const errorData = await res.json().catch(() => ({}));
+          toast({ title: 'Error', description: errorData.detail || 'Failed to add permission', variant: 'destructive' });
         }
       }
     } catch (error) {
+      console.error('Error saving user permission:', error);
       toast({ title: 'Error', description: 'Failed to save permission', variant: 'destructive' });
     }
   };
@@ -2607,16 +2719,28 @@ export const AdminLayout: React.FC = () => {
       if (existing) {
         const res = await authFetch(apiUrl(`/api/tab-access/${existing.id}/`), {
           method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
           body: JSON.stringify({ can_access: canAccess })
         });
         if (res.ok) {
           const updated = await res.json();
+          console.log('Updated tab access:', updated);
+          console.log('Updated tab access structure:', JSON.stringify(updated, null, 2));
           setTabAccess(prev => prev.map((ta: any) => ta.id === existing.id ? updated : ta));
           toast({ title: 'Success', description: 'Tab access updated' });
+        } else {
+          const errorData = await res.json().catch(() => ({}));
+          console.error('Failed to update tab access:', errorData);
+          toast({ title: 'Error', description: errorData.detail || 'Failed to update tab access', variant: 'destructive' });
         }
       } else {
         const res = await authFetch(apiUrl('/api/tab-access/'), {
           method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
           body: JSON.stringify({
             role: currentRole,
             tab: tab,
@@ -2625,11 +2749,17 @@ export const AdminLayout: React.FC = () => {
         });
         if (res.ok) {
           const created = await res.json();
+          console.log('Created tab access:', created);
           setTabAccess(prev => [...prev, created]);
           toast({ title: 'Success', description: 'Tab access added' });
+        } else {
+          const errorData = await res.json().catch(() => ({}));
+          console.error('Failed to create tab access:', errorData);
+          toast({ title: 'Error', description: errorData.detail || 'Failed to add tab access', variant: 'destructive' });
         }
       }
     } catch (error) {
+      console.error('Error saving tab access:', error);
       toast({ title: 'Error', description: 'Failed to save tab access', variant: 'destructive' });
     }
   };
@@ -6430,7 +6560,19 @@ export const AdminLayout: React.FC = () => {
       </Dialog>
 
       {/* Permission Management Dialog */}
-      <Dialog open={permissionDialogOpen} onOpenChange={setPermissionDialogOpen}>
+      <Dialog open={permissionDialogOpen} onOpenChange={(open) => {
+        setPermissionDialogOpen(open);
+        if (!open) {
+          // Reset state when dialog closes
+          setCurrentRole(null);
+          setCurrentUserId(null);
+          setRolePermissions([]);
+          setUserPermissions([]);
+          setTabAccess([]);
+          setAllPermissions([]);
+          setAllTabs([]);
+        }
+      }}>
         <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
@@ -6442,13 +6584,14 @@ export const AdminLayout: React.FC = () => {
           </DialogHeader>
           
           <div className="space-y-6 py-4">
-            {currentRole && tabAccess.length > 0 && (
+            {currentRole && (
               <div className="space-y-4">
                 <h3 className="font-semibold text-lg">Tab Access</h3>
                 <div className="grid gap-3">
                   {allTabs.map((tab) => {
                     const access = tabAccess.find((ta: any) => ta.tab === tab.value);
                     const hasAccess = access ? access.can_access : false;
+                    console.log(`Tab ${tab.value}: hasAccess=${hasAccess}, found=${!!access}`);
                     return (
                       <div key={tab.value} className="flex items-center justify-between p-3 border rounded-lg">
                         <span className="font-medium">{tab.label}</span>
@@ -6463,13 +6606,14 @@ export const AdminLayout: React.FC = () => {
               </div>
             )}
 
-            {currentRole && rolePermissions.length > 0 && (
+            {currentRole && (
               <div className="space-y-4">
                 <h3 className="font-semibold text-lg">CRUD Permissions</h3>
                 <div className="grid gap-3">
                   {allPermissions.map((permission) => {
                     const rp = rolePermissions.find((rp: any) => rp.permission === permission.id);
                     const hasAccess = rp ? rp.can_access : false;
+                    console.log(`Permission ${permission.id} (${permission.display_name}): hasAccess=${hasAccess}, found=${!!rp}`);
                     return (
                       <div key={permission.id} className="flex items-center justify-between p-3 border rounded-lg">
                         <div>
@@ -6487,7 +6631,7 @@ export const AdminLayout: React.FC = () => {
               </div>
             )}
 
-            {currentUserId && userPermissions.length > 0 && (
+            {currentUserId && (
               <div className="space-y-4">
                 <h3 className="font-semibold text-lg">Custom User Permissions</h3>
                 <div className="grid gap-3">
@@ -6513,6 +6657,7 @@ export const AdminLayout: React.FC = () => {
           </div>
 
           <DialogFooter>
+            <Button variant="outline" onClick={refreshRolePermissions}>Refresh</Button>
             <Button variant="outline" onClick={() => setPermissionDialogOpen(false)}>Close</Button>
           </DialogFooter>
         </DialogContent>
