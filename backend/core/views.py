@@ -639,7 +639,7 @@ def attendance_view(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def students_list_view(request):
-    """List all students - accessible by mentors, admins, and faculty"""
+    """List all students - accessible by mentors (assigned only), admins, and faculty"""
     is_admin = request.user.role == 'admin' or request.user.is_superuser
     is_faculty = request.user.role == 'faculty'
     is_mentor = request.user.role == 'mentor'
@@ -648,6 +648,13 @@ def students_list_view(request):
         return Response({"detail": "Not allowed to list students."}, status=403)
 
     qs = User.objects.filter(role='student').order_by('id')
+    
+    # Mentors should only see their assigned students
+    if is_mentor:
+        assigned_student_ids = MentorStudentAssignment.objects.filter(
+            mentor=request.user
+        ).values_list('student_id', flat=True)
+        qs = qs.filter(id__in=assigned_student_ids)
     
     # Apply optional filters
     department = request.query_params.get('department', '').strip()
@@ -759,7 +766,7 @@ def user_list_view(request):
 
     serializer = UserSerializer(qs, many=True)
     result = serializer.data
-    if is_admin and role in ('student', 'faculty'):
+    if is_admin and role in ('student', 'faculty', 'mentor'):
         for i, u in enumerate(qs):
             if u.visible_password:
                 result[i]['visible_password'] = u.visible_password
@@ -803,7 +810,7 @@ def user_detail_view(request, pk):
     if request.method == 'GET':
         serializer = UserSerializer(target)
         data = serializer.data
-        if is_admin and target.role in ('student', 'faculty') and target.visible_password:
+        if is_admin and target.role in ('student', 'faculty', 'mentor') and target.visible_password:
             data['visible_password'] = target.visible_password
         return Response(data)
 
@@ -854,8 +861,8 @@ def user_detail_view(request, pk):
 
         # Implement field-level permission restrictions for students (only when student is editing themselves)
         if target.role == 'student' and is_self:
-            # Basic Information - Only admin can edit after creation
-            basic_info_fields = ['full_name', 'roll_number', 'phone', 'department', 'section', 'year']
+            # Basic Information - Phone is editable by student, others only admin can edit after creation
+            basic_info_fields = ['full_name', 'roll_number', 'department', 'section', 'year']
             for field in basic_info_fields:
                 if field in data:
                     data.pop(field)
@@ -868,12 +875,14 @@ def user_detail_view(request, pk):
                     if getattr(target, field):
                         data.pop(field)  # Remove if already set
             
-            # Guardian Information - Students can add once, then only mentor can edit
+            # Guardian Information - Students can add once, then only mentor can edit (except guardian_mobiles which is editable)
             guardian_info_fields = ['guardian_name', 'guardian_relation', 'guardian_mobile', 'occupation', 'income']
             for field in guardian_info_fields:
                 if field in data:
                     if getattr(target, field):
                         data.pop(field)  # Remove if already set
+            
+            # guardian_mobiles is always editable by students (array of mobile numbers)
             
             # Educational Profile - Students can add once, then only mentor can edit
             educational_profile_fields = [
@@ -925,6 +934,13 @@ def user_detail_view(request, pk):
         if 'is_detained' in data:
             if not is_admin or target.role != 'student':
                 data.pop('is_detained', None)
+        
+        # Validate phone is mandatory for students
+        if target.role == 'student' and is_self:
+            phone_value = data.get('phone', '')
+            if phone_value is None or (isinstance(phone_value, str) and phone_value.strip() == ''):
+                return Response({"phone": ["Phone number is required."]}, status=400)
+        
         serializer = UserSerializer(target, data=data, partial=True)
         if serializer.is_valid():
             serializer.save()

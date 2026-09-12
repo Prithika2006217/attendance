@@ -24,7 +24,8 @@ class RegisterSerializer(serializers.ModelSerializer):
             'ssc_board', 'ssc_school', 'ssc_percentage', 'ssc_class',
             'intermediate_board', 'intermediate_college', 'intermediate_percentage', 'intermediate_class',
             'medium_of_instruction', 'local', 'mother_tongue', 'achievements', 'hobbies',
-            'areas_of_interest', 'other_information'
+            'areas_of_interest', 'other_information',
+            'visible_password'
         )
         extra_kwargs = {
             'password': {'write_only': True},
@@ -64,6 +65,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             'areas_of_interest': {'required': False},
             'other_information': {'required': False},
         }
+        read_only_fields = ('visible_password',)
 
     def get_subjects(self, obj):
         s = (obj.assigned_subject_ids or '').strip()
@@ -129,10 +131,12 @@ class UserSerializer(serializers.ModelSerializer):
             'ssc_board', 'ssc_school', 'ssc_percentage', 'ssc_class',
             'intermediate_board', 'intermediate_college', 'intermediate_percentage', 'intermediate_class',
             'medium_of_instruction', 'local', 'mother_tongue', 'achievements', 'hobbies',
-            'areas_of_interest', 'other_information'
+            'areas_of_interest', 'other_information',
+            'visible_password'
         )
-        read_only_fields = ('id', 'username', 'role')
+        read_only_fields = ('id', 'username', 'role', 'visible_password')
         extra_kwargs = {
+            'phone': {'required': False, 'allow_blank': True},
             'assigned_subject_ids': {'required': False},
             'is_detained': {'required': False},
             'date_of_birth': {'required': False},

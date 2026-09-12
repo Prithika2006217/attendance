@@ -356,7 +356,17 @@ export const StudentLayout: React.FC = () => {
 
   const handleSaveEditProfile = async () => {
     if (numericId == null) return;
-    
+
+    // Validate phone is mandatory
+    if (!profileEditForm.phone || profileEditForm.phone.trim() === '') {
+      toast({
+        title: 'Phone Required',
+        description: 'Phone number is mandatory.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
     try {
       const formData = new FormData();
       formData.append('full_name', profileEditForm.full_name);
@@ -2390,7 +2400,7 @@ export const StudentLayout: React.FC = () => {
                         <Input type="email" value={profileEditForm.email} onChange={e => setProfileEditForm(f => ({ ...f, email: e.target.value.trim() }))} placeholder="Email" autoComplete="email" />
                       </div>
                       <div className="grid gap-2">
-                        <Label>Phone</Label>
+                        <Label>Phone *</Label>
                         <Input value={profileEditForm.phone} onChange={e => setProfileEditForm(f => ({ ...f, phone: e.target.value }))} placeholder="Phone" />
                       </div>
                       <div className="grid gap-2">

@@ -47,7 +47,7 @@ class User(AbstractUser):
 
     full_name = models.CharField(max_length=150, blank=True, null=True)
     roll_number = models.CharField(max_length=50, blank=True, null=True)
-    phone = models.CharField(max_length=20, blank=True, null=True)
+    phone = models.CharField(max_length=20, default='')
     department = models.CharField(max_length=100, blank=True, null=True)
     # Comma-separated section names (e.g. "A,B") for students in multiple sections
     section = models.CharField(

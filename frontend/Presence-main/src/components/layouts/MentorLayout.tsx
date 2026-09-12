@@ -275,9 +275,7 @@ export const MentorLayout: React.FC = () => {
   const { user, logout } = useAuth();
   const [activeTab, setActiveTab] = useState('students');
   const [assignedStudents, setAssignedStudents] = useState<AssignedStudent[]>([]);
-  const [allStudents, setAllStudents] = useState<AssignedStudent[]>([]);
   const [loading, setLoading] = useState(false);
-  const [allStudentsLoading, setAllStudentsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterDepartment, setFilterDepartment] = useState('');
   const [filterYear, setFilterYear] = useState('');
@@ -409,7 +407,6 @@ export const MentorLayout: React.FC = () => {
 
   useEffect(() => {
     loadAssignedStudents();
-    loadAllStudents();
   }, []);
 
   const loadAssignedStudents = async () => {
@@ -434,31 +431,6 @@ export const MentorLayout: React.FC = () => {
       });
     } finally {
       setLoading(false);
-    }
-  };
-
-  const loadAllStudents = async () => {
-    setAllStudentsLoading(true);
-    try {
-      const res = await authFetch(apiUrl('/api/students/'));
-      if (res.ok) {
-        const data = await res.json();
-        setAllStudents(Array.isArray(data) ? data : []);
-      } else {
-        toast({
-          title: 'Error',
-          description: 'Failed to load all students.',
-          variant: 'destructive'
-        });
-      }
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: 'Network error occurred.',
-        variant: 'destructive'
-      });
-    } finally {
-      setAllStudentsLoading(false);
     }
   };
 
@@ -2071,13 +2043,13 @@ export const MentorLayout: React.FC = () => {
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {allStudentsLoading ? (
+                  {loading ? (
                     <div className="text-center py-8 text-gray-500">Loading students...</div>
-                  ) : allStudents.length === 0 ? (
+                  ) : assignedStudents.length === 0 ? (
                     <div className="text-center py-8 text-gray-500">No students found</div>
                   ) : (
                     <div className="space-y-4">
-                      {allStudents.map((student) => (
+                      {assignedStudents.map((student) => (
                         <div
                           key={student.id}
                           className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
@@ -2160,13 +2132,13 @@ export const MentorLayout: React.FC = () => {
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
-                    {allStudentsLoading ? (
+                    {loading ? (
                       <div className="text-center py-8 text-gray-500">Loading students...</div>
-                    ) : allStudents.length === 0 ? (
+                    ) : assignedStudents.length === 0 ? (
                       <div className="text-center py-8 text-gray-500">No students found</div>
                     ) : (
                       <div className="space-y-3">
-                        {allStudents.map((student) => (
+                        {assignedStudents.map((student) => (
                           <div
                             key={student.id}
                             className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
@@ -2354,13 +2326,13 @@ export const MentorLayout: React.FC = () => {
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
-                    {allStudentsLoading ? (
+                    {loading ? (
                       <div className="text-center py-8 text-gray-500">Loading students...</div>
-                    ) : allStudents.length === 0 ? (
+                    ) : assignedStudents.length === 0 ? (
                       <div className="text-center py-8 text-gray-500">No students found</div>
                     ) : (
                       <div className="space-y-3">
-                        {allStudents.map((student) => (
+                        {assignedStudents.map((student) => (
                           <div
                             key={student.id}
                             className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
@@ -2534,13 +2506,13 @@ export const MentorLayout: React.FC = () => {
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
-                    {allStudentsLoading ? (
+                    {loading ? (
                       <div className="text-center py-8 text-gray-500">Loading students...</div>
-                    ) : allStudents.length === 0 ? (
+                    ) : assignedStudents.length === 0 ? (
                       <div className="text-center py-8 text-gray-500">No students found</div>
                     ) : (
                       <div className="space-y-3">
-                        {allStudents.map((student) => (
+                        {assignedStudents.map((student) => (
                           <div
                             key={student.id}
                             className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
@@ -2686,13 +2658,13 @@ export const MentorLayout: React.FC = () => {
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
-                    {allStudentsLoading ? (
+                    {loading ? (
                       <div className="text-center py-8 text-gray-500">Loading students...</div>
-                    ) : allStudents.length === 0 ? (
+                    ) : assignedStudents.length === 0 ? (
                       <div className="text-center py-8 text-gray-500">No students found</div>
                     ) : (
                       <div className="space-y-3">
-                        {allStudents.map((student) => (
+                        {assignedStudents.map((student) => (
                           <div
                             key={student.id}
                             className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
