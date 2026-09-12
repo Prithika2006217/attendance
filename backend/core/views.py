@@ -19,14 +19,14 @@ import io
 import base64
 import random
 from decimal import Decimal
-from .models import User, Attendance, Department, Subject, Section, AttendancePortalControl, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord, CounsellingNote, StudentBehaviour, StudentCareer, StudentLink, StudentTraining, Permission, RolePermission, UserPermission, TabAccess
+from .models import User, Attendance, Department, Subject, Section, AttendancePortalControl, FacultyDepartmentSection, QRAttendanceSession, QRAttendanceRecord, MentorStudentAssignment, StudentAcademicRecord, MentorAttendanceRecord, CounsellingNote, StudentBehaviour, StudentCareer, StudentLink, StudentTraining, StudentAchievement, Permission, RolePermission, UserPermission, TabAccess
 from .serializers import (
     RegisterSerializer, LoginSerializer, AttendanceSerializer, UserSerializer,
     DepartmentSerializer, SubjectSerializer, SectionSerializer, FacultyDepartmentSectionSerializer,
     QRAttendanceSessionSerializer, QRAttendanceRecordSerializer, MentorStudentAssignmentSerializer,
     StudentAcademicRecordSerializer, MentorAttendanceRecordSerializer,
     CounsellingNoteSerializer, StudentBehaviourSerializer, StudentCareerSerializer,
-    StudentLinkSerializer, StudentTrainingSerializer, PermissionSerializer,
+    StudentLinkSerializer, StudentTrainingSerializer, StudentAchievementSerializer, PermissionSerializer,
     RolePermissionSerializer, UserPermissionSerializer, TabAccessSerializer,
 )
 
@@ -1036,15 +1036,19 @@ def section_detail_view(request, pk):
 def subject_list_view(request):
     is_admin = request.user.role == 'admin' or request.user.is_superuser
     is_faculty = request.user.role == 'faculty'
+    is_mentor = request.user.role == 'mentor'
     if request.method == 'POST' and not is_admin:
         return Response({"detail": "Admin only."}, status=403)
-    if request.method == 'GET' and not is_admin and not is_faculty:
+    if request.method == 'GET' and not is_admin and not is_faculty and not is_mentor:
         return Response({"detail": "Not allowed."}, status=403)
     if request.method == 'GET':
         qs = Subject.objects.prefetch_related('departments').all().order_by('year', 'semester', 'code', 'id')
         department = request.query_params.get('department', '').strip()
         if department:
-            qs = qs.filter(departments__code=department)
+            # Filter by department code or name
+            qs = qs.filter(
+                Q(departments__code=department) | Q(departments__name__icontains=department)
+            )
         year = request.query_params.get('year', '').strip()
         if year:
             qs = qs.filter(year=year)
@@ -2793,27 +2797,23 @@ def mentor_students_view(request, mentor_id=None):
         if target_mentor.role != 'mentor':
             return Response({"detail": "Only mentors have assigned students."}, status=400)
 
-    # Get assigned students
-    assignments = MentorStudentAssignment.objects.filter(mentor=target_mentor).select_related('student')
+    # Get assigned students and use the serializer for proper data calculation
+    assignments = MentorStudentAssignment.objects.filter(mentor=target_mentor).select_related('student', 'mentor')
+    
+    # Extract student data from assignments - get fresh data from database
     students = []
     for assignment in assignments:
         student = assignment.student
         
-        # Get latest attendance record for this student
-        latest_attendance = MentorAttendanceRecord.objects.filter(
-            student=student,
-            mentor=target_mentor
-        ).order_by('-created_at').first()
+        # Use the serializer to get calculated fields like attendance_percentage and overall_cgpa
+        serializer = MentorStudentAssignmentSerializer(assignment)
+        assignment_data = serializer.data
         
-        attendance_percentage = None
-        if latest_attendance:
-            attendance_percentage = latest_attendance.attendance_percentage
-        
-        students.append({
+        student_data = {
             'id': student.id,
             'username': student.username,
             'email': student.email,
-            'full_name': student.full_name,
+            'full_name': student.full_name or student.username,
             'roll_number': student.roll_number,
             'department': student.department,
             'section': student.section,
@@ -2822,12 +2822,17 @@ def mentor_students_view(request, mentor_id=None):
             'is_detained': student.is_detained,
             'assignment_notes': assignment.notes,
             'assigned_at': assignment.assigned_at,
-            'attendance_percentage': attendance_percentage,
-            # Personal Details
+            'attendance_percentage': assignment_data.get('attendance_percentage'),
+            'overall_cgpa': assignment_data.get('overall_cgpa'),
+            'photo': assignment_data.get('student_photo'),
+            # Get guardian info from the serializer
+            'guardian_name': assignment_data.get('guardian_name'),
+            'guardian_relation': assignment_data.get('guardian_relation'),
+            'guardian_mobile': assignment_data.get('guardian_mobile'),
+            'guardian_mobiles': assignment_data.get('guardian_mobiles'),
+            # Personal Details (from fresh student object)
             'date_of_birth': student.date_of_birth,
             'date_of_joining': student.date_of_joining,
-            'guardian_name': student.guardian_name,
-            'guardian_relation': student.guardian_relation,
             'occupation': student.occupation,
             'income': student.income,
             'address': student.address,
@@ -2841,8 +2846,7 @@ def mentor_students_view(request, mentor_id=None):
             'scholarship': student.scholarship,
             'residential_details': student.residential_details,
             'mode_of_transport': student.mode_of_transport,
-            'photo': student.photo.url if student.photo and hasattr(student.photo, 'url') else None,
-            # Educational Profile
+            # Educational Profile (from fresh student object)
             'ssc_board': student.ssc_board,
             'ssc_school': student.ssc_school,
             'ssc_percentage': student.ssc_percentage,
@@ -2858,7 +2862,9 @@ def mentor_students_view(request, mentor_id=None):
             'hobbies': student.hobbies,
             'areas_of_interest': student.areas_of_interest,
             'other_information': student.other_information
-        })
+        }
+
+        students.append(student_data)
 
     return Response(students)
 
@@ -2984,7 +2990,7 @@ def mentor_attendance_records_view(request, student_id):
             return Response({"detail": "Student not found."}, status=404)
 
     if request.method == 'GET':
-        records = MentorAttendanceRecord.objects.filter(student=student).order_by('-academic_year', 'semester', 'month')
+        records = MentorAttendanceRecord.objects.filter(student=student).order_by('-to_date', '-from_date', 'semester')
         serializer = MentorAttendanceRecordSerializer(records, many=True)
         return Response(serializer.data)
 
@@ -2996,20 +3002,111 @@ def mentor_attendance_records_view(request, student_id):
         data['student'] = student_id
         data['mentor'] = request.user.id
         
-        # Calculate attendance percentage if not provided
-        if 'attendance_percentage' not in data or not data['attendance_percentage']:
-            total_classes = int(data.get('total_classes', 0))
-            classes_attended = int(data.get('classes_attended', 0))
-            if total_classes > 0:
-                data['attendance_percentage'] = round((classes_attended / total_classes) * 100, 2)
-            else:
-                data['attendance_percentage'] = 0
+        # If date range is provided, calculate attendance from regular attendance records
+        if 'from_date' in data and 'to_date' in data:
+            try:
+                from_date = datetime.datetime.strptime(data['from_date'], '%Y-%m-%d').date()
+                to_date = datetime.datetime.strptime(data['to_date'], '%Y-%m-%d').date()
+                
+                if from_date > to_date:
+                    return Response({"detail": "From date cannot be after to date."}, status=400)
+                
+                # Calculate attendance from regular attendance records
+                attendance_records = Attendance.objects.filter(
+                    student=student,
+                    date__gte=from_date,
+                    date__lte=to_date
+                )
+                
+                total_classes = attendance_records.count()
+                present_classes = attendance_records.filter(status='present').count()
+                
+                attendance_percentage = 0
+                if total_classes > 0:
+                    attendance_percentage = round((present_classes / total_classes) * 100, 2)
+                
+                data['total_classes'] = total_classes
+                data['classes_attended'] = present_classes
+                data['attendance_percentage'] = attendance_percentage
+            except (ValueError, KeyError) as e:
+                return Response({"detail": f"Invalid date format: {str(e)}"}, status=400)
+        else:
+            # Fallback to manual calculation if no date range
+            if 'attendance_percentage' not in data or not data['attendance_percentage']:
+                total_classes = int(data.get('total_classes', 0))
+                classes_attended = int(data.get('classes_attended', 0))
+                if total_classes > 0:
+                    data['attendance_percentage'] = round((classes_attended / total_classes) * 100, 2)
+                else:
+                    data['attendance_percentage'] = 0
         
         serializer = MentorAttendanceRecordSerializer(data=data)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data, status=201)
         return Response(serializer.errors, status=400)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def calculate_student_attendance_view(request, student_id):
+    """Calculate attendance for a student based on date range using existing attendance data."""
+    is_mentor = request.user.role == 'mentor'
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+    is_student = request.user.role == 'student'
+
+    if not is_mentor and not is_admin and not is_student:
+        return Response({"detail": "Not authorized."}, status=403)
+
+    # Verify access permissions
+    if is_mentor:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+            if not MentorStudentAssignment.objects.filter(mentor=request.user, student=student).exists():
+                return Response({"detail": "You are not assigned to this student."}, status=403)
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+    elif is_student:
+        if request.user.id != student_id:
+            return Response({"detail": "Students can only calculate their own attendance."}, status=403)
+        student = request.user
+    else:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+
+    from_date_str = request.data.get('from_date')
+    to_date_str = request.data.get('to_date')
+
+    if not from_date_str or not to_date_str:
+        return Response({"detail": "from_date and to_date are required."}, status=400)
+
+    try:
+        from_date = datetime.datetime.strptime(from_date_str, '%Y-%m-%d').date()
+        to_date = datetime.datetime.strptime(to_date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return Response({"detail": "Invalid date format. Use YYYY-MM-DD."}, status=400)
+
+    # Calculate attendance from existing Attendance records
+    from .models import Attendance
+    attendance_records = Attendance.objects.filter(
+        student=student,
+        date__range=[from_date, to_date]
+    )
+
+    total_classes = attendance_records.count()
+    present_classes = attendance_records.filter(status='present').count()
+    
+    attendance_percentage = 0
+    if total_classes > 0:
+        attendance_percentage = round((present_classes / total_classes) * 100, 2)
+
+    return Response({
+        'total_classes': total_classes,
+        'classes_attended': present_classes,
+        'attendance_percentage': attendance_percentage
+    })
 
 
 @api_view(['GET', 'PUT', 'DELETE'])
@@ -3056,14 +3153,43 @@ def mentor_attendance_record_detail_view(request, student_id, record_id):
         
         data = request.data.copy()
         
-        # Calculate attendance percentage if not provided
-        if 'attendance_percentage' not in data or not data['attendance_percentage']:
-            total_classes = int(data.get('total_classes', record.total_classes))
-            classes_attended = int(data.get('classes_attended', record.classes_attended))
-            if total_classes > 0:
-                data['attendance_percentage'] = round((classes_attended / total_classes) * 100, 2)
-            else:
-                data['attendance_percentage'] = 0
+        # If date range is provided, calculate attendance from regular attendance records
+        if 'from_date' in data and 'to_date' in data:
+            try:
+                from_date = datetime.datetime.strptime(data['from_date'], '%Y-%m-%d').date()
+                to_date = datetime.datetime.strptime(data['to_date'], '%Y-%m-%d').date()
+                
+                if from_date > to_date:
+                    return Response({"detail": "From date cannot be after to date."}, status=400)
+                
+                # Calculate attendance from regular attendance records
+                attendance_records = Attendance.objects.filter(
+                    student=student,
+                    date__gte=from_date,
+                    date__lte=to_date
+                )
+                
+                total_classes = attendance_records.count()
+                present_classes = attendance_records.filter(status='present').count()
+                
+                attendance_percentage = 0
+                if total_classes > 0:
+                    attendance_percentage = round((present_classes / total_classes) * 100, 2)
+                
+                data['total_classes'] = total_classes
+                data['classes_attended'] = present_classes
+                data['attendance_percentage'] = attendance_percentage
+            except (ValueError, KeyError) as e:
+                return Response({"detail": f"Invalid date format: {str(e)}"}, status=400)
+        else:
+            # Fallback to manual calculation if no date range
+            if 'attendance_percentage' not in data or not data['attendance_percentage']:
+                total_classes = int(data.get('total_classes', record.total_classes))
+                classes_attended = int(data.get('classes_attended', record.classes_attended))
+                if total_classes > 0:
+                    data['attendance_percentage'] = round((classes_attended / total_classes) * 100, 2)
+                else:
+                    data['attendance_percentage'] = 0
         
         serializer = MentorAttendanceRecordSerializer(record, data=data, partial=True)
         if serializer.is_valid():
@@ -4146,3 +4272,121 @@ def initialize_default_permissions_view(request):
         "detail": f"Default permissions initialized. Created {created_count} new permissions.",
         "roles_configured": list(default_permissions.keys())
     })
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def student_achievements_view(request, student_id):
+    """Get or create achievements for a specific student."""
+    is_student = request.user.role == 'student'
+    is_mentor = request.user.role == 'mentor'
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+
+    if not is_student and not is_mentor and not is_admin:
+        return Response({"detail": "Not authorized."}, status=403)
+
+    # Verify access permissions
+    if is_student:
+        if request.user.id != student_id:
+            return Response({"detail": "Students can only view their own achievements."}, status=403)
+        student = request.user
+    elif is_mentor:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+            if not MentorStudentAssignment.objects.filter(mentor=request.user, student=student).exists():
+                return Response({"detail": "You are not assigned to this student."}, status=403)
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+    else:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+
+    if request.method == 'GET':
+        records = StudentAchievement.objects.filter(student=student).order_by('-date_achieved', '-created_at')
+        serializer = StudentAchievementSerializer(records, many=True)
+        return Response(serializer.data)
+
+    elif request.method == 'POST':
+        if not is_student and not is_mentor:
+            return Response({"detail": "Only students and mentors can create achievements."}, status=403)
+        
+        # Validate certificate for certifications
+        achievement_type = request.data.get('achievement_type')
+        if achievement_type == 'certifications' and not request.FILES.get('certificate'):
+            return Response({"detail": "Certificate is required for certifications."}, status=400)
+        
+        data = request.data.copy()
+        data['student'] = student_id
+        
+        serializer = StudentAchievementSerializer(data=data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def student_achievement_detail_view(request, student_id, achievement_id):
+    """Get, update or delete a specific achievement."""
+    is_student = request.user.role == 'student'
+    is_mentor = request.user.role == 'mentor'
+    is_admin = request.user.role == 'admin' or request.user.is_superuser
+
+    if not is_student and not is_mentor and not is_admin:
+        return Response({"detail": "Not authorized."}, status=403)
+
+    # Verify access permissions
+    if is_student:
+        if request.user.id != student_id:
+            return Response({"detail": "Students can only view their own achievements."}, status=403)
+        student = request.user
+    elif is_mentor:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+            if not MentorStudentAssignment.objects.filter(mentor=request.user, student=student).exists():
+                return Response({"detail": "You are not assigned to this student."}, status=403)
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+    else:
+        try:
+            student = User.objects.get(id=student_id, role='student')
+        except User.DoesNotExist:
+            return Response({"detail": "Student not found."}, status=404)
+
+    try:
+        achievement = StudentAchievement.objects.get(id=achievement_id, student=student)
+    except StudentAchievement.DoesNotExist:
+        return Response({"detail": "Achievement not found."}, status=404)
+
+    if request.method == 'GET':
+        serializer = StudentAchievementSerializer(achievement)
+        return Response(serializer.data)
+
+    elif request.method == 'PUT':
+        if not is_student and not is_mentor:
+            return Response({"detail": "Only students and mentors can update achievements."}, status=403)
+        
+        # Validate certificate for certifications
+        achievement_type = request.data.get('achievement_type', achievement.achievement_type)
+        if achievement_type == 'certifications' and not request.FILES.get('certificate') and not achievement.certificate:
+            return Response({"detail": "Certificate is required for certifications."}, status=400)
+        
+        data = request.data.copy()
+        # Remove student from request data as it shouldn't be changed
+        data.pop('student', None)
+        
+        serializer = StudentAchievementSerializer(achievement, data=data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+
+    elif request.method == 'DELETE':
+        if not is_student and not is_mentor and not is_admin:
+            return Response({"detail": "Only students, mentors and admins can delete achievements."}, status=403)
+        
+        achievement.delete()
+        return Response(status=204)

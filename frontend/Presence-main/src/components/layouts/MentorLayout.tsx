@@ -102,9 +102,11 @@ type MentorAttendanceRecord = {
   student_roll_number: string | null;
   mentor: number;
   mentor_name: string;
-  month: string;
+  month: string | null;
   semester: string;
-  academic_year: string;
+  academic_year: string | null;
+  from_date: string | null;
+  to_date: string | null;
   total_classes: number;
   classes_attended: number;
   attendance_percentage: number;
@@ -288,6 +290,8 @@ export const MentorLayout: React.FC = () => {
   const [academicRecordsLoading, setAcademicRecordsLoading] = useState(false);
   const [academicRecordDialogOpen, setAcademicRecordDialogOpen] = useState(false);
   const [editingAcademicRecord, setEditingAcademicRecord] = useState<AcademicRecord | null>(null);
+  const [availableSubjects, setAvailableSubjects] = useState<any[]>([]);
+  const [subjectsLoading, setSubjectsLoading] = useState(false);
   const [academicRecordForm, setAcademicRecordForm] = useState({
     course_name: '',
     semester: '',
@@ -308,12 +312,11 @@ export const MentorLayout: React.FC = () => {
   const [mentorAttendanceDialogOpen, setMentorAttendanceDialogOpen] = useState(false);
   const [editingMentorAttendance, setEditingMentorAttendance] = useState<MentorAttendanceRecord | null>(null);
   const [mentorAttendanceForm, setMentorAttendanceForm] = useState({
-    month: '',
     semester: '',
-    academic_year: '',
-    total_classes: '',
-    classes_attended: '',
+    from_date: '',
+    to_date: '',
     remarks: '',
+    calculated_attendance: null as { total_classes: number; classes_attended: number; attendance_percentage: number } | null,
   });
   const [studentAchievements, setStudentAchievements] = useState<StudentAchievement[]>([]);
   const [studentAchievementsLoading, setStudentAchievementsLoading] = useState(false);
@@ -1403,7 +1406,36 @@ export const MentorLayout: React.FC = () => {
       grade: '',
       remarks: '',
     });
+    loadSubjectsForStudent();
     setAcademicRecordDialogOpen(true);
+  };
+
+  const loadSubjectsForStudent = async () => {
+    if (!selectedStudent) return;
+    
+    setSubjectsLoading(true);
+    try {
+      const res = await authFetch(apiUrl('/api/subjects/'));
+      if (res.ok) {
+        const data = await res.json();
+        const allSubjects = Array.isArray(data) ? data : [];
+        
+        // Filter subjects that match the student's department and year
+        const filteredSubjects = allSubjects.filter(subject => {
+          const subjectDepts = subject.department_codes || subject.department_names || [];
+          const subjectYear = subject.year;
+          return subjectDepts.includes(selectedStudent.department) && subjectYear === selectedStudent.year;
+        });
+        
+        setAvailableSubjects(filteredSubjects);
+      } else {
+        setAvailableSubjects([]);
+      }
+    } catch (error) {
+      setAvailableSubjects([]);
+    } finally {
+      setSubjectsLoading(false);
+    }
   };
 
   const handleEditAcademicRecord = (record: AcademicRecord) => {
@@ -1423,6 +1455,7 @@ export const MentorLayout: React.FC = () => {
       grade: record.grade || '',
       remarks: record.remarks || '',
     });
+    loadSubjectsForStudent();
     setAcademicRecordDialogOpen(true);
   };
 
@@ -1558,12 +1591,11 @@ export const MentorLayout: React.FC = () => {
   const handleAddMentorAttendance = () => {
     setEditingMentorAttendance(null);
     setMentorAttendanceForm({
-      month: '',
       semester: '',
-      academic_year: '',
-      total_classes: '',
-      classes_attended: '',
+      from_date: '',
+      to_date: '',
       remarks: '',
+      calculated_attendance: null,
     });
     setMentorAttendanceDialogOpen(true);
   };
@@ -1571,23 +1603,71 @@ export const MentorLayout: React.FC = () => {
   const handleEditMentorAttendance = (record: MentorAttendanceRecord) => {
     setEditingMentorAttendance(record);
     setMentorAttendanceForm({
-      month: record.month,
       semester: record.semester,
-      academic_year: record.academic_year,
-      total_classes: record.total_classes.toString(),
-      classes_attended: record.classes_attended.toString(),
+      from_date: record.from_date || '',
+      to_date: record.to_date || '',
       remarks: record.remarks || '',
+      calculated_attendance: {
+        total_classes: record.total_classes,
+        classes_attended: record.classes_attended,
+        attendance_percentage: record.attendance_percentage,
+      },
     });
     setMentorAttendanceDialogOpen(true);
+  };
+
+  const calculateAttendanceFromDateRange = async () => {
+    if (!selectedStudent || !mentorAttendanceForm.from_date || !mentorAttendanceForm.to_date) return;
+    
+    try {
+      const res = await authFetch(
+        apiUrl(`/api/students/${selectedStudent.id}/calculate-attendance/`),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            from_date: mentorAttendanceForm.from_date,
+            to_date: mentorAttendanceForm.to_date,
+          }),
+        }
+      );
+      
+      if (res.ok) {
+        const data = await res.json();
+        setMentorAttendanceForm({
+          ...mentorAttendanceForm,
+          calculated_attendance: {
+            total_classes: data.total_classes,
+            classes_attended: data.classes_attended,
+            attendance_percentage: data.attendance_percentage,
+          },
+        });
+      }
+    } catch (error) {
+      console.error('Error calculating attendance:', error);
+    }
   };
 
   const handleSaveMentorAttendance = async () => {
     if (!selectedStudent) return;
 
+    if (!mentorAttendanceForm.calculated_attendance) {
+      toast({
+        title: 'Attendance Required',
+        description: 'Please calculate attendance by selecting date range and clicking "Calculate Attendance".',
+        variant: 'destructive'
+      });
+      return;
+    }
+
     const payload = {
-      ...mentorAttendanceForm,
-      total_classes: parseInt(mentorAttendanceForm.total_classes) || 0,
-      classes_attended: parseInt(mentorAttendanceForm.classes_attended) || 0,
+      semester: mentorAttendanceForm.semester,
+      from_date: mentorAttendanceForm.from_date,
+      to_date: mentorAttendanceForm.to_date,
+      total_classes: mentorAttendanceForm.calculated_attendance.total_classes,
+      classes_attended: mentorAttendanceForm.calculated_attendance.classes_attended,
+      attendance_percentage: mentorAttendanceForm.calculated_attendance.attendance_percentage,
+      remarks: mentorAttendanceForm.remarks,
     };
 
     try {
@@ -1909,9 +1989,13 @@ export const MentorLayout: React.FC = () => {
                               >
                                 <FileText className="w-4 h-4 mr-2" />
                                 Academic Records
-                                {student.overall_cgpa !== null && student.overall_cgpa !== undefined && (
+                                {student.overall_cgpa !== null && student.overall_cgpa !== undefined ? (
                                   <Badge className="ml-2 text-xs bg-blue-100 text-blue-800">
                                     CGPA: {student.overall_cgpa.toFixed(2)}
+                                  </Badge>
+                                ) : (
+                                  <Badge className="ml-2 text-xs bg-gray-100 text-gray-600">
+                                    CGPA: N/A
                                   </Badge>
                                 )}
                               </Button>
@@ -1923,7 +2007,7 @@ export const MentorLayout: React.FC = () => {
                               >
                                 <CalendarIcon className="w-4 h-4 mr-2" />
                                 Attendance
-                                {student.attendance_percentage !== null && student.attendance_percentage !== undefined && (
+                                {student.attendance_percentage !== null && student.attendance_percentage !== undefined ? (
                                   <Badge 
                                     className={`ml-2 text-xs ${
                                       student.attendance_percentage >= 75
@@ -1934,6 +2018,10 @@ export const MentorLayout: React.FC = () => {
                                     }`}
                                   >
                                     Overall: {student.attendance_percentage.toFixed(1)}%
+                                  </Badge>
+                                ) : (
+                                  <Badge className="ml-2 text-xs bg-gray-100 text-gray-600">
+                                    Overall: N/A
                                   </Badge>
                                 )}
                               </Button>
@@ -3700,21 +3788,58 @@ export const MentorLayout: React.FC = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="course_name">Course Name *</Label>
-                <Input
-                  id="course_name"
-                  value={academicRecordForm.course_name}
-                  onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, course_name: e.target.value })}
-                  placeholder="e.g., Data Structures"
-                />
+                {subjectsLoading ? (
+                  <div className="text-sm text-gray-500">Loading subjects...</div>
+                ) : availableSubjects.length > 0 ? (
+                  <Select
+                    value={academicRecordForm.course_name}
+                    onValueChange={(value) => setAcademicRecordForm({ ...academicRecordForm, course_name: value })}
+                  >
+                    <SelectTrigger id="course_name">
+                      <SelectValue placeholder="Select course" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableSubjects.map((subject) => (
+                        <SelectItem key={subject.id} value={subject.name}>
+                          {subject.code} - {subject.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <>
+                    <Input
+                      id="course_name"
+                      value={academicRecordForm.course_name}
+                      onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, course_name: e.target.value })}
+                      placeholder="No subjects found - enter course name manually"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      No subjects found for {selectedStudent?.department} - Year {selectedStudent?.year}
+                    </p>
+                  </>
+                )}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="semester">Semester *</Label>
-                <Input
-                  id="semester"
+                <Select
                   value={academicRecordForm.semester}
-                  onChange={(e) => setAcademicRecordForm({ ...academicRecordForm, semester: e.target.value })}
-                  placeholder="e.g., 1-1, 2-2"
-                />
+                  onValueChange={(value) => setAcademicRecordForm({ ...academicRecordForm, semester: value })}
+                >
+                  <SelectTrigger id="semester">
+                    <SelectValue placeholder="Select semester" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1-1">1-1</SelectItem>
+                    <SelectItem value="1-2">1-2</SelectItem>
+                    <SelectItem value="2-1">2-1</SelectItem>
+                    <SelectItem value="2-2">2-2</SelectItem>
+                    <SelectItem value="3-1">3-1</SelectItem>
+                    <SelectItem value="3-2">3-2</SelectItem>
+                    <SelectItem value="4-1">4-1</SelectItem>
+                    <SelectItem value="4-2">4-2</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="academic_year">Academic Year *</Label>
@@ -3870,29 +3995,6 @@ export const MentorLayout: React.FC = () => {
           <div className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="month">Month *</Label>
-                <select
-                  id="month"
-                  value={mentorAttendanceForm.month}
-                  onChange={(e) => setMentorAttendanceForm({ ...mentorAttendanceForm, month: e.target.value })}
-                  className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white"
-                >
-                  <option value="">Select Month</option>
-                  <option value="January">January</option>
-                  <option value="February">February</option>
-                  <option value="March">March</option>
-                  <option value="April">April</option>
-                  <option value="May">May</option>
-                  <option value="June">June</option>
-                  <option value="July">July</option>
-                  <option value="August">August</option>
-                  <option value="September">September</option>
-                  <option value="October">October</option>
-                  <option value="November">November</option>
-                  <option value="December">December</option>
-                </select>
-              </div>
-              <div className="space-y-2">
                 <Label htmlFor="semester">Semester *</Label>
                 <Select
                   value={mentorAttendanceForm.semester}
@@ -3913,49 +4015,53 @@ export const MentorLayout: React.FC = () => {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-2 md:col-span-2">
-                <Label htmlFor="academic_year">Academic Year *</Label>
+              <div className="space-y-2">
+                <Label htmlFor="from_date">From Date *</Label>
                 <Input
-                  id="academic_year"
-                  value={mentorAttendanceForm.academic_year}
-                  onChange={(e) => setMentorAttendanceForm({ ...mentorAttendanceForm, academic_year: e.target.value })}
-                  placeholder="e.g., 2023-24"
+                  id="from_date"
+                  type="date"
+                  value={mentorAttendanceForm.from_date}
+                  onChange={(e) => setMentorAttendanceForm({ ...mentorAttendanceForm, from_date: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="to_date">To Date *</Label>
+                <Input
+                  id="to_date"
+                  type="date"
+                  value={mentorAttendanceForm.to_date}
+                  onChange={(e) => setMentorAttendanceForm({ ...mentorAttendanceForm, to_date: e.target.value })}
                 />
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="total_classes">Total Classes *</Label>
-                <Input
-                  id="total_classes"
-                  type="number"
-                  min="0"
-                  value={mentorAttendanceForm.total_classes}
-                  onChange={(e) => setMentorAttendanceForm({ ...mentorAttendanceForm, total_classes: e.target.value })}
-                  placeholder="e.g., 45"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="classes_attended">Classes Attended *</Label>
-                <Input
-                  id="classes_attended"
-                  type="number"
-                  min="0"
-                  value={mentorAttendanceForm.classes_attended}
-                  onChange={(e) => setMentorAttendanceForm({ ...mentorAttendanceForm, classes_attended: e.target.value })}
-                  placeholder="e.g., 42"
-                />
-              </div>
-            </div>
+            <Button 
+              onClick={calculateAttendanceFromDateRange}
+              disabled={!mentorAttendanceForm.from_date || !mentorAttendanceForm.to_date}
+              className="w-full"
+            >
+              Calculate Attendance
+            </Button>
 
-            <div className="bg-blue-50 p-3 rounded-md">
-              <p className="text-sm text-blue-800">
-                <strong>Calculated Attendance:</strong> {mentorAttendanceForm.total_classes && mentorAttendanceForm.classes_attended 
-                  ? `${((parseInt(mentorAttendanceForm.classes_attended) / parseInt(mentorAttendanceForm.total_classes)) * 100).toFixed(2)}%`
-                  : '—'}
-              </p>
-            </div>
+            {mentorAttendanceForm.calculated_attendance && (
+              <div className="bg-blue-50 p-4 rounded-md">
+                <h4 className="font-semibold text-blue-800 mb-2">Attendance Summary</h4>
+                <div className="grid grid-cols-3 gap-4 text-sm">
+                  <div>
+                    <span className="text-gray-600">Total Classes:</span>
+                    <span className="ml-2 font-semibold text-blue-900">{mentorAttendanceForm.calculated_attendance.total_classes}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-600">Classes Attended:</span>
+                    <span className="ml-2 font-semibold text-blue-900">{mentorAttendanceForm.calculated_attendance.classes_attended}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-600">Attendance %:</span>
+                    <span className="ml-2 font-semibold text-blue-900">{mentorAttendanceForm.calculated_attendance.attendance_percentage.toFixed(2)}%</span>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="attendance_remarks">Remarks</Label>

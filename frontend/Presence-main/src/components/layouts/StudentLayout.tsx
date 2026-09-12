@@ -71,6 +71,7 @@ export const StudentLayout: React.FC = () => {
     guardian_name: string | null;
     guardian_relation: string | null;
     guardian_mobile: string | null;
+    guardian_mobiles: string[];
     occupation: string | null;
     income: number | null;
     address: string | null;
@@ -114,7 +115,7 @@ export const StudentLayout: React.FC = () => {
     date_of_joining: '',
     guardian_name: '',
     guardian_relation: '',
-    guardian_mobile: '',
+    guardian_mobiles: [''],
     occupation: '',
     income: '',
     address: '',
@@ -184,7 +185,8 @@ export const StudentLayout: React.FC = () => {
     event_name: '',
     participation_level: '',
     achievement_details: '',
-    date_achieved: ''
+    date_achieved: '',
+    certificate: null as File | null
   });
   
   // Mentor Remarks state
@@ -315,7 +317,9 @@ export const StudentLayout: React.FC = () => {
         date_of_joining: profile.date_of_joining || '',
         guardian_name: profile.guardian_name || '',
         guardian_relation: profile.guardian_relation || '',
-        guardian_mobile: profile.guardian_mobile || '',
+        guardian_mobiles: (Array.isArray(profile.guardian_mobiles) && profile.guardian_mobiles.length > 0) 
+          ? profile.guardian_mobiles 
+          : (profile.guardian_mobile ? [profile.guardian_mobile] : ['']),
         occupation: profile.occupation || '',
         income: profile.income ? String(profile.income) : '',
         address: profile.address || '',
@@ -352,6 +356,7 @@ export const StudentLayout: React.FC = () => {
 
   const handleSaveEditProfile = async () => {
     if (numericId == null) return;
+    
     try {
       const formData = new FormData();
       formData.append('full_name', profileEditForm.full_name);
@@ -367,7 +372,19 @@ export const StudentLayout: React.FC = () => {
       if (profileEditForm.date_of_joining) formData.append('date_of_joining', profileEditForm.date_of_joining);
       if (profileEditForm.guardian_name) formData.append('guardian_name', profileEditForm.guardian_name);
       if (profileEditForm.guardian_relation) formData.append('guardian_relation', profileEditForm.guardian_relation);
-      if (profileEditForm.guardian_mobile) formData.append('guardian_mobile', profileEditForm.guardian_mobile);
+      
+      // Validate and add guardian mobiles
+      const validMobiles = profileEditForm.guardian_mobiles.filter(m => m.trim() !== '');
+      if (validMobiles.length === 0) {
+        toast({
+          title: 'Guardian Mobile Required',
+          description: 'At least one guardian mobile number is required.',
+          variant: 'destructive'
+        });
+        return;
+      }
+      formData.append('guardian_mobiles', JSON.stringify(validMobiles));
+      
       if (profileEditForm.occupation) formData.append('occupation', profileEditForm.occupation);
       if (profileEditForm.income) formData.append('income', profileEditForm.income);
       if (profileEditForm.address) formData.append('address', profileEditForm.address);
@@ -692,7 +709,8 @@ export const StudentLayout: React.FC = () => {
         event_name: achievement.event_name,
         participation_level: achievement.participation_level,
         achievement_details: achievement.achievement_details,
-        date_achieved: achievement.date_achieved
+        date_achieved: achievement.date_achieved,
+        certificate: null // Don't pre-populate file input
       });
     } else {
       setEditingAchievement(null);
@@ -702,7 +720,8 @@ export const StudentLayout: React.FC = () => {
         event_name: '',
         participation_level: '',
         achievement_details: '',
-        date_achieved: ''
+        date_achieved: '',
+        certificate: null
       });
     }
     setAchievementDialogOpen(true);
@@ -710,6 +729,17 @@ export const StudentLayout: React.FC = () => {
 
   const handleSaveAchievement = async () => {
     if (numericId == null) return;
+    
+    // Validate certificate upload for certifications
+    if (achievementForm.achievement_type === 'certifications' && !achievementForm.certificate) {
+      toast({
+        title: 'Certificate Required',
+        description: 'Please upload a certificate (PDF/JPG/PNG) for certifications.',
+        variant: 'destructive'
+      });
+      return;
+    }
+    
     try {
       const url = editingAchievement
         ? apiUrl(`/api/students/${numericId}/achievements/${editingAchievement.id}/`)
@@ -717,9 +747,28 @@ export const StudentLayout: React.FC = () => {
       
       const method = editingAchievement ? 'PUT' : 'POST';
       
+      // Use FormData for file upload, otherwise use JSON
+      let body;
+      let headers = {};
+      
+      if (achievementForm.certificate) {
+        body = new FormData();
+        body.append('achievement_type', achievementForm.achievement_type);
+        body.append('activity_name', achievementForm.activity_name);
+        body.append('event_name', achievementForm.event_name);
+        body.append('participation_level', achievementForm.participation_level);
+        body.append('achievement_details', achievementForm.achievement_details);
+        body.append('date_achieved', achievementForm.date_achieved);
+        body.append('certificate', achievementForm.certificate);
+      } else {
+        body = JSON.stringify(achievementForm);
+        headers = { 'Content-Type': 'application/json' };
+      }
+      
       const res = await authFetch(url, {
         method,
-        body: JSON.stringify(achievementForm)
+        headers,
+        body
       });
 
       if (res.ok) {
@@ -2070,6 +2119,7 @@ export const StudentLayout: React.FC = () => {
                           <SelectItem value="co_curricular">Co-Curricular</SelectItem>
                           <SelectItem value="representation">Representation</SelectItem>
                           <SelectItem value="participation">Participation</SelectItem>
+                          <SelectItem value="certifications">Certifications</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -2129,6 +2179,22 @@ export const StudentLayout: React.FC = () => {
                       onChange={(e) => setAchievementForm({ ...achievementForm, achievement_details: e.target.value })}
                     />
                   </div>
+                  {achievementForm.achievement_type === 'certifications' && (
+                    <div className="space-y-2">
+                      <Label htmlFor="certificate">Upload Certificate *</Label>
+                      <Input
+                        id="certificate"
+                        type="file"
+                        accept=".pdf,.jpg,.jpeg,.png"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0] || null;
+                          setAchievementForm({ ...achievementForm, certificate: file });
+                        }}
+                        className="cursor-pointer"
+                      />
+                      <p className="text-xs text-muted-foreground">Accepted formats: PDF, JPG, PNG</p>
+                    </div>
+                  )}
                 </div>
                 <DialogFooter>
                   <Button variant="outline" onClick={() => setAchievementDialogOpen(false)}>
@@ -2220,7 +2286,11 @@ export const StudentLayout: React.FC = () => {
                     </div>
                     <div>
                       <label className="text-sm font-medium text-muted-foreground">Guardian Mobile</label>
-                      <p className="text-lg font-medium">{apiProfile?.guardian_mobile || '–'}</p>
+                      <p className="text-lg font-medium">
+                        {(Array.isArray(apiProfile?.guardian_mobiles) && apiProfile.guardian_mobiles.length > 0) 
+                          ? apiProfile.guardian_mobiles.join(', ') 
+                          : (apiProfile?.guardian_mobile || '–')}
+                      </p>
                     </div>
                     <div>
                       <label className="text-sm font-medium text-muted-foreground">Occupation</label>
@@ -2435,8 +2505,45 @@ export const StudentLayout: React.FC = () => {
                         </Select>
                       </div>
                       <div className="grid gap-2">
-                        <Label>Guardian Mobile</Label>
-                        <Input value={profileEditForm.guardian_mobile} onChange={e => setProfileEditForm(f => ({ ...f, guardian_mobile: e.target.value }))} placeholder="Guardian mobile number" />
+                        <Label>Guardian Mobile Numbers *</Label>
+                        {profileEditForm.guardian_mobiles.map((mobile, index) => (
+                          <div key={index} className="flex gap-2">
+                            <Input 
+                              value={mobile} 
+                              onChange={e => {
+                                const newMobiles = [...profileEditForm.guardian_mobiles];
+                                newMobiles[index] = e.target.value;
+                                setProfileEditForm(f => ({ ...f, guardian_mobiles: newMobiles }));
+                              }} 
+                              placeholder="Guardian mobile number" 
+                              className={index === 0 ? 'border-red-300' : ''}
+                            />
+                            {index > 0 && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="icon"
+                                onClick={() => {
+                                  const newMobiles = profileEditForm.guardian_mobiles.filter((_, i) => i !== index);
+                                  setProfileEditForm(f => ({ ...f, guardian_mobiles: newMobiles }));
+                                }}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            )}
+                          </div>
+                        ))}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setProfileEditForm(f => ({ ...f, guardian_mobiles: [...f.guardian_mobiles, ''] }))}
+                          className="w-full"
+                        >
+                          <Plus className="h-4 w-4 mr-2" />
+                          Add Another Mobile Number
+                        </Button>
+                        <p className="text-xs text-muted-foreground">At least one mobile number is required</p>
                       </div>
                       <div className="grid gap-2">
                         <Label>Occupation</Label>
@@ -2667,12 +2774,6 @@ export const StudentLayout: React.FC = () => {
                   <CardTitle>Educational Profile</CardTitle>
                   <CardDescription>Your educational history and additional information</CardDescription>
                 </div>
-                {numericId != null && (
-                  <Button variant="outline" size="sm" onClick={handleOpenEditProfile}>
-                    <Edit className="w-4 h-4 mr-2" />
-                    Edit Profile
-                  </Button>
-                )}
               </CardHeader>
               <CardContent>
                 <div className="grid gap-6">
@@ -2776,12 +2877,6 @@ export const StudentLayout: React.FC = () => {
                   <CardTitle>Student Details</CardTitle>
                   <CardDescription>Fill and update your complete student information</CardDescription>
                 </div>
-                {numericId != null && (
-                  <Button variant="outline" size="sm" onClick={handleOpenEditProfile}>
-                    <Edit className="w-4 h-4 mr-2" />
-                    Edit Details
-                  </Button>
-                )}
               </CardHeader>
               <CardContent>
                 <div className="grid gap-6">
@@ -2832,7 +2927,11 @@ export const StudentLayout: React.FC = () => {
                     </div>
                     <div>
                       <label className="text-sm font-medium text-muted-foreground">Guardian Mobile</label>
-                      <p className="text-lg font-medium">{apiProfile?.guardian_mobile || '–'}</p>
+                      <p className="text-lg font-medium">
+                        {(Array.isArray(apiProfile?.guardian_mobiles) && apiProfile.guardian_mobiles.length > 0) 
+                          ? apiProfile.guardian_mobiles.join(', ') 
+                          : (apiProfile?.guardian_mobile || '–')}
+                      </p>
                     </div>
                     <div>
                       <label className="text-sm font-medium text-muted-foreground">Occupation</label>

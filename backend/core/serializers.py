@@ -17,7 +17,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             'department', 'section', 'sections', 'year',
             'is_detained',
             'assigned_subject_ids', 'subjects',
-            'date_of_birth', 'date_of_joining', 'guardian_name', 'guardian_relation', 'guardian_mobile',
+            'date_of_birth', 'date_of_joining', 'guardian_name', 'guardian_relation', 'guardian_mobile', 'guardian_mobiles',
             'occupation', 'income', 'address', 'city', 'state', 'pincode',
             'admission_category', 'eapcet_rank', 'ecet_rank', 'reservation_category',
             'scholarship', 'residential_details', 'mode_of_transport', 'photo',
@@ -122,7 +122,7 @@ class UserSerializer(serializers.ModelSerializer):
             'department', 'departments', 'section', 'sections', 'year',
             'is_detained',
             'assigned_subject_ids', 'subjects', 'faculty_department_sections',
-            'date_of_birth', 'date_of_joining', 'guardian_name', 'guardian_relation', 'guardian_mobile',
+            'date_of_birth', 'date_of_joining', 'guardian_name', 'guardian_relation', 'guardian_mobile', 'guardian_mobiles',
             'occupation', 'income', 'address', 'city', 'state', 'pincode',
             'admission_category', 'eapcet_rank', 'ecet_rank', 'reservation_category',
             'scholarship', 'residential_details', 'mode_of_transport', 'photo',
@@ -140,6 +140,7 @@ class UserSerializer(serializers.ModelSerializer):
             'guardian_name': {'required': False},
             'guardian_relation': {'required': False},
             'guardian_mobile': {'required': False},
+            'guardian_mobiles': {'required': False},
             'occupation': {'required': False},
             'income': {'required': False},
             'address': {'required': False},
@@ -198,9 +199,37 @@ class UserSerializer(serializers.ModelSerializer):
             for assignment in assignments
         ]
 
+    def validate_guardian_mobiles(self, value):
+        """Validate guardian mobile numbers."""
+        if value is None:
+            return []
+        
+        # Handle JSON string from FormData
+        if isinstance(value, str):
+            try:
+                import json
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                raise serializers.ValidationError("Invalid format for guardian mobiles.")
+        
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Guardian mobiles must be a list.")
+        
+        # Filter out empty strings and validate each mobile number
+        valid_mobiles = [m.strip() for m in value if m and m.strip()]
+        
+        # Validate mobile number format
+        if valid_mobiles and len(valid_mobiles) > 0:
+            for mobile in valid_mobiles:
+                if not mobile.isdigit() or len(mobile) < 10:
+                    raise serializers.ValidationError(f"Invalid mobile number: {mobile}")
+        
+        return valid_mobiles
+
     def to_representation(self, instance):
-        """Custom representation to handle photo field."""
+        """Custom representation to handle photo field and guardian mobiles."""
         data = super().to_representation(instance)
+        
         # Handle photo field - return full URL if exists, null otherwise
         if instance.photo and hasattr(instance.photo, 'url'):
             # Get the URL from the image field
@@ -211,13 +240,44 @@ class UserSerializer(serializers.ModelSerializer):
             data['photo'] = photo_url
         else:
             data['photo'] = None
+        
+        # Handle guardian_mobiles field - prioritize guardian_mobiles, fallback to guardian_mobile
+        if instance.guardian_mobiles and isinstance(instance.guardian_mobiles, list) and len(instance.guardian_mobiles) > 0:
+            data['guardian_mobiles'] = instance.guardian_mobiles
+        elif instance.guardian_mobile:
+            data['guardian_mobiles'] = [instance.guardian_mobile]
+        else:
+            data['guardian_mobiles'] = []
+        
         return data
 
     def update(self, instance, validated_data):
+        # Handle guardian_mobiles field
+        if 'guardian_mobiles' in validated_data:
+            guardian_mobiles = validated_data.pop('guardian_mobiles')
+            # Parse JSON string if needed (from FormData)
+            if isinstance(guardian_mobiles, str):
+                try:
+                    import json
+                    guardian_mobiles = json.loads(guardian_mobiles)
+                except json.JSONDecodeError:
+                    guardian_mobiles = []
+            
+            instance.guardian_mobiles = guardian_mobiles
+            # Update legacy guardian_mobile field for backward compatibility
+            if guardian_mobiles and len(guardian_mobiles) > 0:
+                instance.guardian_mobile = guardian_mobiles[0]
+            else:
+                instance.guardian_mobile = None
+        
         # Username/role are read-only on the serializer; email may be updated by allowed users.
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
+        
+        # Refresh the instance to ensure all fields are updated
+        instance.refresh_from_db()
+        
         return instance
 
 
@@ -242,15 +302,20 @@ class SectionSerializer(serializers.ModelSerializer):
 class SubjectSerializer(serializers.ModelSerializer):
     departments = serializers.PrimaryKeyRelatedField(queryset=Department.objects.all(), many=True)
     department_codes = serializers.SerializerMethodField(read_only=True)
+    department_names = serializers.SerializerMethodField(read_only=True)
     department_code = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Subject
-        fields = ('id', 'name', 'code', 'departments', 'department_codes', 'department_code', 'year', 'semester')
+        fields = ('id', 'name', 'code', 'departments', 'department_codes', 'department_names', 'department_code', 'year', 'semester')
 
     def get_department_codes(self, obj):
         codes = [d.code for d in obj.departments.all()]
         return sorted(codes)
+
+    def get_department_names(self, obj):
+        names = [d.name for d in obj.departments.all()]
+        return sorted(names)
 
     def get_department_code(self, obj):
         codes = self.get_department_codes(obj)
@@ -371,6 +436,10 @@ class MentorStudentAssignmentSerializer(serializers.ModelSerializer):
     student_photo = serializers.SerializerMethodField(read_only=True)
     attendance_percentage = serializers.SerializerMethodField(read_only=True)
     overall_cgpa = serializers.SerializerMethodField(read_only=True)
+    guardian_name = serializers.SerializerMethodField(read_only=True)
+    guardian_relation = serializers.SerializerMethodField(read_only=True)
+    guardian_mobile = serializers.SerializerMethodField(read_only=True)
+    guardian_mobiles = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = MentorStudentAssignment
@@ -379,7 +448,8 @@ class MentorStudentAssignmentSerializer(serializers.ModelSerializer):
             'student_name', 'student_email', 'student_roll_number',
             'student_department', 'student_section', 'student_year',
             'student_phone', 'student_is_detained', 'student_photo',
-            'assigned_at', 'notes', 'attendance_percentage', 'overall_cgpa'
+            'assigned_at', 'notes', 'attendance_percentage', 'overall_cgpa',
+            'guardian_name', 'guardian_relation', 'guardian_mobile', 'guardian_mobiles'
         )
         read_only_fields = ('id', 'assigned_at')
 
@@ -421,6 +491,24 @@ class MentorStudentAssignmentSerializer(serializers.ModelSerializer):
             return photo_url
         return None
 
+    def get_guardian_name(self, obj):
+        return obj.student.guardian_name
+
+    def get_guardian_relation(self, obj):
+        return obj.student.guardian_relation
+
+    def get_guardian_mobile(self, obj):
+        return obj.student.guardian_mobile
+
+    def get_guardian_mobiles(self, obj):
+        # Return guardian_mobiles if available, otherwise fall back to guardian_mobile
+        if obj.student.guardian_mobiles and isinstance(obj.student.guardian_mobiles, list) and len(obj.student.guardian_mobiles) > 0:
+            return obj.student.guardian_mobiles
+        elif obj.student.guardian_mobile:
+            return [obj.student.guardian_mobile]
+        else:
+            return []
+
     def get_student_roll_number(self, obj):
         return obj.student.roll_number
 
@@ -431,9 +519,25 @@ class MentorStudentAssignmentSerializer(serializers.ModelSerializer):
         return obj.student.section
 
     def get_attendance_percentage(self, obj):
-        """Calculate overall attendance percentage for the student."""
-        from .models import Attendance
+        """Calculate overall attendance percentage for the student from mentor attendance records."""
+        from .models import MentorAttendanceRecord
         try:
+            # First try to get attendance from mentor attendance records
+            mentor_attendance_records = MentorAttendanceRecord.objects.filter(student=obj.student)
+            if mentor_attendance_records.exists():
+                # Calculate average attendance percentage from all mentor records
+                total_percentage = 0
+                count = 0
+                for record in mentor_attendance_records:
+                    if record.attendance_percentage is not None:
+                        total_percentage += float(record.attendance_percentage)
+                        count += 1
+                
+                if count > 0:
+                    return round(total_percentage / count, 1)
+            
+            # Fallback to regular attendance records if no mentor records found
+            from .models import Attendance
             total_classes = Attendance.objects.filter(student=obj.student).count()
             if total_classes == 0:
                 return None
@@ -444,23 +548,23 @@ class MentorStudentAssignmentSerializer(serializers.ModelSerializer):
             return None
 
     def get_overall_cgpa(self, obj):
-        """Calculate overall CGPA from academic records."""
+        """Calculate overall CGPA from academic records using SGPA values."""
         from .models import StudentAcademicRecord
         try:
             academic_records = StudentAcademicRecord.objects.filter(student=obj.student)
             if not academic_records.exists():
                 return None
             
-            total_cgpa = 0
+            total_sgpa = 0
             count = 0
             for record in academic_records:
-                if record.cgpa:
-                    total_cgpa += record.cgpa
+                if record.sgpa:
+                    total_sgpa += float(record.sgpa)
                     count += 1
             
             if count == 0:
                 return None
-            return round(total_cgpa / count, 2)
+            return round(total_sgpa / count, 2)
         except Exception:
             return None
 
@@ -504,7 +608,7 @@ class MentorAttendanceRecordSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'student', 'student_name', 'student_roll_number',
             'mentor', 'mentor_name', 'month', 'semester', 'academic_year',
-            'total_classes', 'classes_attended', 'attendance_percentage',
+            'from_date', 'to_date', 'total_classes', 'classes_attended', 'attendance_percentage',
             'remarks', 'created_at', 'updated_at'
         )
         read_only_fields = ('id', 'created_at', 'updated_at', 'mentor')
@@ -523,6 +627,7 @@ class StudentAchievementSerializer(serializers.ModelSerializer):
     """Serializer for student achievements."""
     student_name = serializers.SerializerMethodField(read_only=True)
     student_roll_number = serializers.SerializerMethodField(read_only=True)
+    certificate = serializers.FileField(required=False, allow_null=True)
 
     class Meta:
         model = StudentAchievement
@@ -530,7 +635,7 @@ class StudentAchievementSerializer(serializers.ModelSerializer):
             'id', 'student', 'student_name', 'student_roll_number',
             'achievement_type', 'activity_name', 'event_name', 
             'participation_level', 'achievement_details', 'date_achieved',
-            'created_at', 'updated_at'
+            'certificate', 'created_at', 'updated_at'
         )
         read_only_fields = ('id', 'created_at', 'updated_at')
 

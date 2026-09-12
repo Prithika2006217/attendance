@@ -67,7 +67,8 @@ class User(AbstractUser):
     date_of_joining = models.DateField(blank=True, null=True)
     guardian_name = models.CharField(max_length=150, blank=True, null=True, help_text='Father/Mother/Guardian name')
     guardian_relation = models.CharField(max_length=50, blank=True, null=True, help_text='Relation to guardian (Father/Mother/Guardian)')
-    guardian_mobile = models.CharField(max_length=20, blank=True, null=True, help_text='Guardian mobile number')
+    guardian_mobile = models.CharField(max_length=20, blank=True, null=True, help_text='Guardian mobile number (legacy field)')
+    guardian_mobiles = models.JSONField(default=list, blank=True, null=True, help_text='List of guardian mobile numbers')
     occupation = models.CharField(max_length=100, blank=True, null=True)
     income = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
     address = models.TextField(blank=True, null=True, help_text='Permanent address')
@@ -239,9 +240,11 @@ class MentorAttendanceRecord(models.Model):
     """Model to store mentor-entered attendance records for students."""
     student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='mentor_attendance_records')
     mentor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='entered_attendance_records')
-    month = models.CharField(max_length=20, help_text='Month (e.g., January, February)')
+    month = models.CharField(max_length=20, help_text='Month (e.g., January, February)', blank=True, null=True)
     semester = models.CharField(max_length=50, help_text='Semester (e.g., 1-1, 1-2, 2-1, 2-2)')
-    academic_year = models.CharField(max_length=20, help_text='Academic year (e.g., 2023-24)')
+    academic_year = models.CharField(max_length=20, help_text='Academic year (e.g., 2023-24)', blank=True, null=True)
+    from_date = models.DateField(help_text='From date for attendance calculation', blank=True, null=True)
+    to_date = models.DateField(help_text='To date for attendance calculation', blank=True, null=True)
     total_classes = models.IntegerField(default=0, help_text='Total number of classes conducted')
     classes_attended = models.IntegerField(default=0, help_text='Number of classes attended by student')
     attendance_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0, help_text='Attendance percentage')
@@ -252,10 +255,18 @@ class MentorAttendanceRecord(models.Model):
     class Meta:
         verbose_name = 'Mentor Attendance Record'
         verbose_name_plural = 'Mentor Attendance Records'
-        ordering = ['-academic_year', 'semester', 'month']
-        unique_together = [['student', 'month', 'semester', 'academic_year']]
+        ordering = ['-to_date', '-from_date', 'semester']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['student', 'semester', 'from_date', 'to_date'],
+                name='unique_mentor_attendance_date_range',
+                condition=models.Q(from_date__isnull=False) & models.Q(to_date__isnull=False)
+            )
+        ]
 
     def __str__(self):
+        if self.from_date and self.to_date:
+            return f"{self.student.full_name or self.student.username} - {self.from_date} to {self.to_date} ({self.semester})"
         return f"{self.student.full_name or self.student.username} - {self.month} {self.semester} ({self.academic_year})"
 
 
@@ -266,6 +277,7 @@ class StudentAchievement(models.Model):
         ('co_curricular', 'Co-Curricular'),
         ('representation', 'Representation'),
         ('participation', 'Participation'),
+        ('certifications', 'Certifications'),
     )
     
     student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='achievement_records')
@@ -275,6 +287,7 @@ class StudentAchievement(models.Model):
     participation_level = models.CharField(max_length=100, help_text='Level of participation (e.g., College, District, State, National)')
     achievement_details = models.TextField(help_text='Details about the achievement')
     date_achieved = models.DateField(help_text='Date when the achievement was made')
+    certificate = models.FileField(upload_to='achievement_certificates/', blank=True, null=True, help_text='Certificate file for certifications')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
